@@ -658,17 +658,31 @@ public class TwoFactorAuthController : ControllerBase
                 }
                 catch (MediaBrowser.Controller.Authentication.AuthenticationException)
                 {
-                    // Password was already verified in Step 1; reaching here is a
-                    // rare race (e.g. user disabled between calls). Keep the
-                    // uniform message so nothing is leaked.
+                    // Wrong password — for the non-TOTP paths (SEC S8) this catch
+                    // IS the password check; for the TOTP path it's a rare race
+                    // (e.g. the user was disabled between calls). The pre-verify /
+                    // enrollment mark set above is undone in the finally. Keep the
+                    // uniform message so nothing is leaked; password failures are
+                    // not counted toward the 2FA lockout (SEC S4).
                     return Unauthorized(new { message = uniformFailMessage });
                 }
             }
             finally
             {
-                if (!authSucceeded && !requiresPostPasswordChallenge)
+                // Undo the (user, device) mark set before the mint if the mint
+                // failed, so a wrong password can't leave a stale pre-verify or
+                // enrollment-in-progress flag for that device (the latter would
+                // make the failsafe block-only instead of revoke a later token).
+                if (!authSucceeded)
                 {
-                    _challengeStore.ConsumeDevicePreVerified(user.Id, deviceId);
+                    if (requiresPostPasswordChallenge)
+                    {
+                        _challengeStore.ClearEnrollmentInProgress(user.Id, deviceId);
+                    }
+                    else
+                    {
+                        _challengeStore.ConsumeDevicePreVerified(user.Id, deviceId);
+                    }
                 }
             }
 
