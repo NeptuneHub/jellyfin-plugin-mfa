@@ -222,18 +222,23 @@ public class RequestBlockerMiddleware
         var userData = await _store.GetUserDataAsync(user.Id).ConfigureAwait(false);
         var isEnrolled = userData.TotpEnabled && userData.TotpVerified;
 
-        var isAdmin = false;
+        // SEC S5: fail CLOSED if the admin lookup throws — an unresolved admin
+        // under a non-Optional scope is assumed to require 2FA rather than waved
+        // straight through to the native login endpoint.
+        bool mustEnforce;
         try
         {
-            isAdmin = userManager.GetUserById(user.Id)?.HasPermission(PermissionKind.IsAdministrator) ?? false;
+            var isAdmin = userManager.GetUserById(user.Id)?.HasPermission(PermissionKind.IsAdministrator) ?? false;
+            mustEnforce = config.ShouldEnforceFor(isAdmin);
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "[2FA] Native-login pre-check could not resolve admin status");
+            _logger.LogDebug(ex, "[2FA] Native-login pre-check could not resolve admin status — failing closed");
+            mustEnforce = config.EnforcementScope != EnforcementScope.Optional;
         }
 
         // No 2FA obligation → unaffected; every client logs in as before.
-        if (!isEnrolled && !config.ShouldEnforceFor(isAdmin))
+        if (!isEnrolled && !mustEnforce)
         {
             return false;
         }

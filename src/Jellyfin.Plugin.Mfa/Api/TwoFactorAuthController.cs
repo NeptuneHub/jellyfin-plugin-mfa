@@ -4,8 +4,11 @@ using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Linq;
 using System.Net.Mime;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
+using Jellyfin.Plugin.Mfa.Configuration;
 using Jellyfin.Plugin.Mfa.Models;
 using Jellyfin.Plugin.Mfa.Services;
 using MediaBrowser.Controller.Library;
@@ -89,15 +92,50 @@ public class TwoFactorAuthController : ControllerBase
         => (code is not null && code.Length > MaxCodeLength)
             || (token is not null && token.Length > MaxTokenLength);
 
-    private bool IsAdmin(Guid userId)
+    // SEC S5: enforcement decision that fails CLOSED. If the admin lookup throws
+    // (a transient error), we must NOT silently treat an admin as a regular user
+    // and let them skip 2FA. Under any non-Optional scope an unresolved user is
+    // assumed to require 2FA; under Optional nobody is forced regardless.
+    private bool ShouldEnforce2fa(Guid userId)
     {
+        var config = Plugin.Instance?.Configuration;
+        if (config is null)
+        {
+            return false;
+        }
+
         try
         {
-            return _userManager.GetUserById(userId)?.HasPermission(PermissionKind.IsAdministrator) ?? false;
+            var isAdmin = _userManager.GetUserById(userId)?.HasPermission(PermissionKind.IsAdministrator) ?? false;
+            return config.ShouldEnforceFor(isAdmin);
         }
         catch
         {
-            return false;
+            return config.EnforcementScope != EnforcementScope.Optional;
+        }
+    }
+
+    // SEC S1: a process-lifetime random salt for the dummy hash. Its only purpose
+    // is to make an unknown-username response spend CPU comparable to a real
+    // password check, so a missing account can't be picked out by a near-instant
+    // reply. Best-effort — it mirrors PBKDF2's order of magnitude, not Jellyfin's
+    // exact parameters.
+    private static readonly byte[] DummyHashSalt = RandomNumberGenerator.GetBytes(16);
+
+    private static void PerformDummyPasswordHash(string? password)
+    {
+        try
+        {
+            _ = Rfc2898DeriveBytes.Pbkdf2(
+                Encoding.UTF8.GetBytes(password ?? string.Empty),
+                DummyHashSalt,
+                210_000,
+                HashAlgorithmName.SHA512,
+                64);
+        }
+        catch
+        {
+            // Never let the timing-mitigation hash surface as a request error.
         }
     }
 
@@ -426,9 +464,19 @@ public class TwoFactorAuthController : ControllerBase
                 req.Username, !string.IsNullOrEmpty(req.Code));
 
             var user = _userManager.GetUserByName(req.Username);
+
+            // SEC S1: one identical response for every credential failure (unknown
+            // user, wrong password, missing code, wrong code) so neither the
+            // wording nor the timing reveals whether an account exists or has 2FA
+            // enabled.
+            const string uniformFailMessage = "Invalid username, password, or verification code.";
+
             if (user is null)
             {
-                return Unauthorized(new { message = "Invalid username or password." });
+                // SEC S1: spend comparable CPU to a real password check so an
+                // unknown username can't be told apart by a near-instant reply.
+                PerformDummyPasswordHash(req.Password);
+                return Unauthorized(new { message = uniformFailMessage });
             }
 
             var userData = await _store.GetUserDataAsync(user.Id).ConfigureAwait(false);
@@ -446,50 +494,49 @@ public class TwoFactorAuthController : ControllerBase
             }
 
             var totpEnabled = userData.TotpEnabled && userData.TotpVerified;
-            var config = Plugin.Instance?.Configuration;
-            var requiresPostPasswordChallenge = !totpEnabled
-                && config is not null
-                && config.ShouldEnforceFor(IsAdmin(user.Id));
+            var requiresPostPasswordChallenge = !totpEnabled && ShouldEnforce2fa(user.Id);
 
             var codeConsumedRecovery = false;
 
-            // SEC S1: one identical response for every credential failure (wrong
-            // password, missing code, wrong code) so neither the wording nor the
-            // timing reveals whether an account has 2FA enabled.
-            const string uniformFailMessage = "Invalid username, password, or verification code.";
-
-            // --- Step 1: verify the PASSWORD first, WITHOUT minting a session.
-            // AuthenticateUser runs Jellyfin's PBKDF2 for every existing user
-            // regardless of 2FA state, closing the timing side-channel that
-            // otherwise let an attacker distinguish 2FA from non-2FA accounts
-            // (SEC S1). The session/token is only minted later, by
-            // AuthenticateNewSession, after the code is verified — preserving the
-            // "no usable token until 2FA passes" invariant. ---
-            bool passwordValid;
-            try
-            {
-                var authedUser = await _userManager
-                    .AuthenticateUser(req.Username, req.Password, clientIp, isUserSession: true)
-                    .ConfigureAwait(false);
-                passwordValid = authedUser is not null;
-            }
-            catch (MediaBrowser.Controller.Authentication.AuthenticationException)
-            {
-                passwordValid = false;
-            }
-
-            if (!passwordValid)
-            {
-                await _store.RecordFailedAttemptAsync(user.Id).ConfigureAwait(false);
-                return Unauthorized(new { message = uniformFailMessage });
-            }
-
-            // --- Step 2: password is correct. If the user has 2FA, verify the
-            // code now. The recovery code is consumed ONLY here, after the
-            // password is proven, so an attacker holding a recovery code but not
-            // the password can no longer burn the victim's codes (SEC S2). ---
+            // SEC S8: only the active-TOTP path needs to verify the password
+            // WITHOUT minting a session (so no usable token exists until the code
+            // is checked). Users with no second factor — and the forced-enrollment
+            // path, which deliberately mints a token to stash — are authenticated
+            // by the single AuthenticateNewSession call in Step 3, avoiding a
+            // redundant second PBKDF2 pass (and a double-count against Jellyfin's
+            // own login-attempt policy). Wrong-password timing stays one hash
+            // across every case, preserving SEC S1.
             if (totpEnabled)
             {
+                // --- Step 1: verify the PASSWORD first, WITHOUT minting a session. ---
+                bool passwordValid;
+                try
+                {
+                    var authedUser = await _userManager
+                        .AuthenticateUser(req.Username, req.Password, clientIp, isUserSession: true)
+                        .ConfigureAwait(false);
+                    passwordValid = authedUser is not null;
+                }
+                catch (MediaBrowser.Controller.Authentication.AuthenticationException)
+                {
+                    passwordValid = false;
+                }
+
+                // SEC S4: a wrong PASSWORD does NOT count toward the 2FA lockout.
+                // Jellyfin already throttles password failures; counting them here
+                // let an unauthenticated attacker who only knows a username lock the
+                // account out at will (and, with BlockNativeLoginForEnforcedUsers,
+                // deny the victim any fallback). Only wrong second-factor CODES —
+                // which require the correct password to reach — accrue toward it.
+                if (!passwordValid)
+                {
+                    return Unauthorized(new { message = uniformFailMessage });
+                }
+
+                // --- Step 2: password proven. Verify the second factor now. The
+                // recovery code is consumed ONLY here (SEC S2) and ATOMICALLY under
+                // the per-user lock (SEC S2b) so concurrent requests can't spend the
+                // same code twice or clobber an unrelated update. ---
                 if (string.IsNullOrEmpty(req.Code))
                 {
                     await _store.RecordFailedAttemptAsync(user.Id).ConfigureAwait(false);
@@ -501,12 +548,20 @@ public class TwoFactorAuthController : ControllerBase
                 var maybeRecovery = req.Code.Replace("-", string.Empty).Replace(" ", string.Empty);
                 if (maybeRecovery.Length >= 8 && maybeRecovery.All(char.IsLetterOrDigit))
                 {
-                    var idx = FindRecoveryCodeIndex(userData, req.Code);
-                    if (idx >= 0)
+                    var consumed = false;
+                    await _store.MutateAsync(user.Id, ud =>
                     {
-                        userData.RecoveryCodes[idx].Used = true;
-                        userData.RecoveryCodes[idx].UsedAt = DateTime.UtcNow;
-                        await _store.SaveUserDataAsync(userData).ConfigureAwait(false);
+                        var idx = FindRecoveryCodeIndex(ud, req.Code);
+                        if (idx >= 0)
+                        {
+                            ud.RecoveryCodes[idx].Used = true;
+                            ud.RecoveryCodes[idx].UsedAt = DateTime.UtcNow;
+                            consumed = true;
+                        }
+                    }).ConfigureAwait(false);
+
+                    if (consumed)
+                    {
                         codeValid = true;
                         codeConsumedRecovery = true;
                     }
@@ -534,10 +589,12 @@ public class TwoFactorAuthController : ControllerBase
                         userData.LastUsedTotpStep, out var acceptedStep))
                     {
                         codeValid = true;
-                        userData.LastUsedTotpStep = acceptedStep;
-                        // Persist the floor immediately so a concurrent verify with
-                        // the same code/step is rejected.
-                        await _store.SaveUserDataAsync(userData).ConfigureAwait(false);
+                        // Persist the replay floor atomically (SEC S2b) so a
+                        // concurrent request can't lose this update.
+                        await _store.MutateAsync(user.Id, ud =>
+                        {
+                            if (acceptedStep > ud.LastUsedTotpStep) ud.LastUsedTotpStep = acceptedStep;
+                        }).ConfigureAwait(false);
                     }
                 }
 
@@ -754,14 +811,22 @@ public class TwoFactorAuthController : ControllerBase
 
         if (string.Equals(request.Method, "recovery", StringComparison.OrdinalIgnoreCase))
         {
-            var idx = FindRecoveryCodeIndex(userData, request.Code);
-            valid = idx >= 0;
-            if (valid)
+            // SEC S2b: consume the recovery code atomically under the per-user lock
+            // so two concurrent challenges can't both spend the same code or lose
+            // an unrelated update via a stale read-modify-write.
+            var consumed = false;
+            await _store.MutateAsync(challenge.UserId, ud =>
             {
-                userData.RecoveryCodes[idx].Used = true;
-                userData.RecoveryCodes[idx].UsedAt = DateTime.UtcNow;
-                consumedRecovery = true;
-            }
+                var idx = FindRecoveryCodeIndex(ud, request.Code);
+                if (idx >= 0)
+                {
+                    ud.RecoveryCodes[idx].Used = true;
+                    ud.RecoveryCodes[idx].UsedAt = DateTime.UtcNow;
+                    consumed = true;
+                }
+            }).ConfigureAwait(false);
+            valid = consumed;
+            consumedRecovery = consumed;
         }
         else
         {
@@ -786,14 +851,12 @@ public class TwoFactorAuthController : ControllerBase
                 userData.LastUsedTotpStep, out var acceptedTotpStep);
             if (valid)
             {
-                userData.LastUsedTotpStep = acceptedTotpStep;
-                await _store.SaveUserDataAsync(userData).ConfigureAwait(false);
+                // Persist the replay floor atomically (SEC S2b).
+                await _store.MutateAsync(challenge.UserId, ud =>
+                {
+                    if (acceptedTotpStep > ud.LastUsedTotpStep) ud.LastUsedTotpStep = acceptedTotpStep;
+                }).ConfigureAwait(false);
             }
-        }
-
-        if (valid && consumedRecovery)
-        {
-            await _store.SaveUserDataAsync(userData).ConfigureAwait(false);
         }
 
         if (!valid)

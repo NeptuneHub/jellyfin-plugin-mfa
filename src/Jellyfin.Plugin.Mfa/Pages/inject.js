@@ -2,7 +2,21 @@
     if (window.__twofactor_injected) return;
     window.__twofactor_injected = true;
 
-    console.log('[2FA] inject.js v3.3.0 loaded');
+    console.log('[2FA] inject.js v3.4.0 loaded');
+
+    // SEC S9: snapshot the native primitives we rely on for security-relevant
+    // decisions BEFORE any other page script can run, so a later-injected script
+    // that re-wraps window.fetch / XHR / JSON.parse can't subvert our auth
+    // interception or response parsing. We can't stop other code from also
+    // wrapping these, but our own logic always uses these captured originals.
+    // (This is a client-side convenience layer; the server-side
+    // RequestBlockerMiddleware + SessionStarted failsafe are the real enforcement
+    // and do not depend on anything here.)
+    var origFetch = window.fetch ? window.fetch.bind(window) : null;
+    var origOpen = XMLHttpRequest.prototype.open;
+    var origSend = XMLHttpRequest.prototype.send;
+    var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+    var nativeJSONParse = JSON.parse.bind(JSON);
 
     // ============================================================
     // 1a. TFA-pending sessionStorage flag + client-side short-circuit.
@@ -195,7 +209,6 @@
         return headers;
     }
 
-    var origFetch = window.fetch ? window.fetch.bind(window) : null;
     if (origFetch) {
         window.fetch = function (input, init) {
             var url = (typeof input === 'string') ? input : (input && input.url) || '';
@@ -231,9 +244,6 @@
             });
         };
     }
-    var origOpen = XMLHttpRequest.prototype.open;
-    var origSend = XMLHttpRequest.prototype.send;
-    var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
     XMLHttpRequest.prototype.open = function (method, url) {
         this.__tfa_url = url;
         this.__tfa_authHeader = null;
@@ -262,7 +272,7 @@
                 if (xhr.readyState !== 4) return;
                 if (xhr.status !== 401 && xhr.status !== 403) return;
                 try {
-                    var body = JSON.parse(xhr.responseText || '{}');
+                    var body = nativeJSONParse(xhr.responseText || '{}');
                     if (body && (body.twoFactorRequired || body.TwoFactorRequired)) {
                         setTfaPending();
                     }
@@ -274,7 +284,7 @@
                 if (xhr.readyState !== 4) return;
                 if (xhr.status !== 401 && xhr.status !== 403) return;
                 try {
-                    var body = JSON.parse(xhr.responseText || '{}');
+                    var body = nativeJSONParse(xhr.responseText || '{}');
                     if (body && (body.twoFactorRequired || body.TwoFactorRequired)) {
                         setTfaPending();
                         handleTwoFactorBody(body);

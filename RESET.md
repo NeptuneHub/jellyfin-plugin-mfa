@@ -61,8 +61,8 @@ recovery codes — they re-enrol from scratch.
 Then the only option is asking another admin (any user with admin
 privileges) to disable 2FA from the admin panel:
 
-**Dashboard → Plugins → Two-Factor Authentication → Users → [user] →
-Disable**
+**Dashboard → Plugins → Multi-Factor Authentication (MFA) → Users → [user] →
+Reset**
 
 If you're the only admin and you're locked out, this is the only path
 forward. Plan ahead: keep recovery codes printed, or set a 2nd admin.

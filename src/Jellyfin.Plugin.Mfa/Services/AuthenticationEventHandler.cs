@@ -104,19 +104,24 @@ public class AuthenticationEventHandler : IHostedService
         var userData = await _store.GetUserDataAsync(info.UserId).ConfigureAwait(false);
         var isEnrolled = userData.TotpEnabled && userData.TotpVerified;
 
-        var isAdmin = false;
+        // SEC S5: fail CLOSED if the admin lookup throws. Leaving the user looking
+        // like a non-admin on a transient failure would let an admin slip through
+        // under the Admins enforcement scope.
+        bool mustEnforce;
         try
         {
-            isAdmin = _userManager.GetUserById(info.UserId)?
+            var isAdmin = _userManager.GetUserById(info.UserId)?
                 .HasPermission(PermissionKind.IsAdministrator) ?? false;
+            mustEnforce = config.ShouldEnforceFor(isAdmin);
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "[2FA] Could not resolve admin status for {UserId}", info.UserId);
+            _logger.LogDebug(ex, "[2FA] Could not resolve admin status for {UserId} — failing closed", info.UserId);
+            mustEnforce = config.EnforcementScope != Configuration.EnforcementScope.Optional;
         }
 
         // Not enrolled and policy doesn't require it → genuinely no 2FA; allow.
-        if (!isEnrolled && !config.ShouldEnforceFor(isAdmin))
+        if (!isEnrolled && !mustEnforce)
         {
             return;
         }
@@ -210,24 +215,58 @@ public class AuthenticationEventHandler : IHostedService
             Method = enrollmentInProgress ? "blocked" : "revoked",
         }).ConfigureAwait(false);
 
-        try
+        if (!enrollmentInProgress && !string.IsNullOrEmpty(token))
         {
-            if (!enrollmentInProgress && !string.IsNullOrEmpty(token))
+            // Revoke the access token in Jellyfin's persistent store — this also
+            // ends the session, so no separate ReportSessionEnded needed.
+            //
+            // SEC S6: a failed revoke would leave a password-only token alive,
+            // guarded only by the volatile in-memory block (which lapses after
+            // ~10 min or a process restart). Retry once; if it still fails, escalate
+            // to an Error log, re-affirm the in-memory block, and fall back to
+            // ending the session so the gap is at least minimised and visible.
+            var revoked = false;
+            for (var attempt = 0; attempt < 2 && !revoked; attempt++)
             {
-                // Revoke the access token in Jellyfin's persistent store — this
-                // also ends the session, so no separate ReportSessionEnded needed.
-                await _sessionManager.Logout(token).ConfigureAwait(false);
+                try
+                {
+                    await _sessionManager.Logout(token).ConfigureAwait(false);
+                    revoked = true;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[2FA] Logout attempt {Attempt} failed for {Name}", attempt + 1, info.UserName);
+                }
             }
-            else
+
+            if (!revoked)
             {
-                // Enrollment token (keep it alive, just end the unverified session)
-                // or a session whose token couldn't be resolved (best effort).
-                await _sessionManager.ReportSessionEnded(info.Id).ConfigureAwait(false);
+                _challengeStore.BlockToken(token);
+                _logger.LogError(
+                    "[2FA] Could not revoke unverified token for {Name} after retries — it remains blocked in-memory only; confirm the session ended",
+                    info.UserName);
+                try
+                {
+                    await _sessionManager.ReportSessionEnded(info.Id).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[2FA] Fallback ReportSessionEnded also failed for {Name}", info.UserName);
+                }
             }
         }
-        catch (Exception ex)
+        else
         {
-            _logger.LogWarning(ex, "[2FA] Failed to tear down unverified session for {Name}", info.UserName);
+            // Enrollment token (keep it alive, just end the unverified session) or a
+            // session whose token couldn't be resolved (best effort).
+            try
+            {
+                await _sessionManager.ReportSessionEnded(info.Id).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[2FA] Failed to end unverified session for {Name}", info.UserName);
+            }
         }
     }
 }
