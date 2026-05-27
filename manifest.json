@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/NeptuneHub/jellyfin-plugin-mfa/main/mfa.png",
     "versions": [
       {
+        "version": "1.0.3.0",
+        "changelog": "## v1.0.3\n\n### Changes\n- fix",
+        "targetAbi": "10.10.0.0",
+        "sourceUrl": "https://github.com/NeptuneHub/jellyfin-plugin-mfa/releases/download/v1.0.3/Jellyfin.Plugin.Mfav1.0.3.0.zip",
+        "checksum": "D7009CAC4DE1847E31A4F76F035E2A43",
+        "timestamp": "2026-05-27T17:09:04Z"
+      },
+      {
         "version": "1.0.2.0",
         "changelog": "## v1.0.2\n\n### Changes\n- security fix\n- Stop tracking .claude/settings.local.json\n- @ Stop tracking .claude/settings.local.json\n- deleted old security policy\n- updated logo\n- readme update + added logo\n- readme update",
         "targetAbi": "10.10.0.0",
