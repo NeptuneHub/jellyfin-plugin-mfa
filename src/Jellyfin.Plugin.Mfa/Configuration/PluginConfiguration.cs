@@ -67,4 +67,17 @@ public class PluginConfiguration : BasePluginConfiguration
     /// and log in normally on every client (web, TV, mobile). Set false to fall
     /// back to block-after-mint behaviour only.</summary>
     public bool BlockNativeLoginForEnforcedUsers { get; set; } = true;
+
+    /// <summary>When true, an enrolled user may complete a Quick Connect login
+    /// without entering a TOTP/recovery code. Authorizing a Quick Connect request
+    /// already requires an existing signed-in session, and under 2FA enforcement
+    /// that session was itself 2FA-verified — so the second factor was effectively
+    /// provided at approval time. Default false: Quick Connect sessions for
+    /// enrolled users are revoked by the SessionStarted failsafe like any other
+    /// login that hasn't completed 2FA. Users with no 2FA obligation can always
+    /// use Quick Connect, regardless of this setting. Note this relaxation applies
+    /// only to already-<em>enrolled</em> users; a user who is merely required to
+    /// have 2FA (by <see cref="EnforcementScope"/>) but hasn't enrolled is still
+    /// forced through enrollment.</summary>
+    public bool AllowQuickConnectForEnrolledUsers { get; set; }
 }

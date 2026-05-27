@@ -35,7 +35,24 @@
       "Bash(Select-Object Name, Mode)",
       "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\gcola\\\\Music\\\\jellyfin-plugin-mfa\" -Force | Select-Object Name, @{Name=\"Type\"; Expression={if \\($_.PSIsContainer\\) { \"DIR\" } else { \"FILE\" }}})",
       "PowerShell(& \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\" test tests/Jellyfin.Plugin.Mfa.Tests/Jellyfin.Plugin.Mfa.Tests.csproj -clp:NoSummary 2>&1 | Select-Object -Last 25)",
-      "PowerShell(& \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\" test tests/Jellyfin.Plugin.Mfa.Tests/Jellyfin.Plugin.Mfa.Tests.csproj -clp:NoSummary 2>&1 | Select-Object -Last 8)"
+      "PowerShell(& \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\" test tests/Jellyfin.Plugin.Mfa.Tests/Jellyfin.Plugin.Mfa.Tests.csproj -clp:NoSummary 2>&1 | Select-Object -Last 8)",
+      "PowerShell(dotnet build src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj -c Release --nologo -v minimal 2>&1)",
+      "Bash(where dotnet *)",
+      "Read(//c/Users/gcola/.dotnet/**)",
+      "PowerShell(& \"C:\\\\Program Files\\\\dotnet\\\\dotnet.exe\" build src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj -c Release --nologo -v minimal 2>&1)",
+      "Bash(\"/c/Users/gcola/.dotnet/dotnet.exe\" --list-sdks)",
+      "Bash(\"/c/Program Files/dotnet/dotnet.exe\" --list-sdks)",
+      "PowerShell(& \"C:\\\\Users\\\\gcola\\\\.dotnet\\\\dotnet.exe\" build src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj -c Release --nologo -v minimal 2>&1)",
+      "PowerShell(& \"C:\\\\Users\\\\gcola\\\\.dotnet\\\\dotnet.exe\" test tests/Jellyfin.Plugin.Mfa.Tests/Jellyfin.Plugin.Mfa.Tests.csproj --nologo -v minimal 2>&1)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\gcola\\\\.dotnet;$env:PATH\"; & \"$PWD\\\\build.ps1\" -Configuration Release 2>&1 | Select-Object -Last 25)",
+      "PowerShell(Get-Item \"$PWD\\\\dist\\\\Jellyfin.Plugin.Mfa\\\\Jellyfin.Plugin.Mfa.dll\" | Select-Object Name, LastWriteTime, Length)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\gcola\\\\.dotnet;$env:PATH\"; & \"$PWD\\\\build.ps1\" -Configuration Release 2>&1 | Select-Object -Last 12; Get-Item \"$PWD\\\\dist\\\\Jellyfin.Plugin.Mfa\\\\Jellyfin.Plugin.Mfa.dll\" | Select-Object LastWriteTime, Length)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(gh api *)",
+      "Bash(grep -iE '\\\\.\\(cs|html|js\\)$')",
+      "PowerShell($db = \\(gh api repos/ZL154/JellyfinSecurity --jq '.default_branch'\\); Write-Output \"default=$db\"; gh api \"repos/ZL154/JellyfinSecurity/git/trees/$db`?recursive=1\" --jq '.tree[].path' | Where-Object { $_ -match '\\\\.\\(cs|html|js\\)$' })",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\gcola\\\\.dotnet;$env:PATH\"; & \"C:\\\\Users\\\\gcola\\\\.dotnet\\\\dotnet.exe\" test tests/Jellyfin.Plugin.Mfa.Tests/Jellyfin.Plugin.Mfa.Tests.csproj --nologo -v minimal 2>&1 | Select-Object -Last 15)",
+      "PowerShell($env:PATH = \"C:\\\\Users\\\\gcola\\\\.dotnet;$env:PATH\"; & \"$PWD\\\\build.ps1\" -Configuration Release 2>&1 | Select-Object -Last 8; Get-Item \"$PWD\\\\dist\\\\Jellyfin.Plugin.Mfa\\\\Jellyfin.Plugin.Mfa.dll\" | Select-Object LastWriteTime, Length)"
     ],
     "additionalDirectories": [
       "C:\\Users\\gcola\\.claude\\plans"

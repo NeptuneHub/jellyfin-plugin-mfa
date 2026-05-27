@@ -7,3 +7,4 @@ dist/
 *.nupkg
 publish/
 Jellyfin.Plugin.Mfa*.zip
+.claude/settings.local.json

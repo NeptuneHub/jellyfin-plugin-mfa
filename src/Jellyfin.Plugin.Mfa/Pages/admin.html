@@ -86,6 +86,16 @@
                         2FA are unaffected and sign in normally on every client.</span>
                     </span>
                 </label>
+                <label style="display:flex;align-items:flex-start;gap:8px;margin-bottom:18px;cursor:pointer;">
+                    <input type="checkbox" id="cfgAllowQuickConnect" style="margin-top:3px;">
+                    <span style="font-size:13px;">Allow Quick Connect for users with 2FA
+                        <span class="muted" style="display:block;font-size:12px;">When on, an enrolled user can
+                        finish a Quick Connect sign-in without entering a code — approving a Quick Connect request
+                        already requires an existing signed-in (2FA-verified) session. When off (default), Quick
+                        Connect sign-ins for protected users are revoked until 2FA is completed. Users without 2FA
+                        can always use Quick Connect.</span>
+                    </span>
+                </label>
                 <div>
                     <button is="emby-button" type="button" class="raised button-submit" id="btnSaveSettings"><span>Save</span></button>
                 </div>
@@ -216,6 +226,7 @@
                     page.querySelector('#cfgScope').value = scope || 'Optional';
                     // Default to true when the server omits the field (older config blobs).
                     page.querySelector('#cfgBlockNative').checked = cfg.BlockNativeLoginForEnforcedUsers !== false;
+                    page.querySelector('#cfgAllowQuickConnect').checked = cfg.AllowQuickConnectForEnrolledUsers === true;
                 });
             }
 
@@ -224,6 +235,7 @@
                 api().getPluginConfiguration(PLUGIN_ID).then(function (cfg) {
                     cfg.EnforcementScope = page.querySelector('#cfgScope').value;
                     cfg.BlockNativeLoginForEnforcedUsers = page.querySelector('#cfgBlockNative').checked;
+                    cfg.AllowQuickConnectForEnrolledUsers = page.querySelector('#cfgAllowQuickConnect').checked;
                     return api().updatePluginConfiguration(PLUGIN_ID, cfg);
                 }).then(function () {
                     toast('Settings saved.', true);

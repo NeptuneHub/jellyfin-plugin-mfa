@@ -129,6 +129,31 @@ public class AuthenticationEventHandler : IHostedService
             return;
         }
 
+        // Quick Connect pass-through (opt-in, enrolled users only). A user-scoped,
+        // single-consume flag is set when this user authorized a Quick Connect code
+        // from an already-2FA-verified device (see RequestBlockerMiddleware). The
+        // incoming session has a DIFFERENT deviceId but the SAME userId, so we match
+        // on user, not device. Gated on isEnrolled (NOT mere enforcement) so a
+        // required-but-unenrolled user is still forced to enroll. Mark the token
+        // verified + device pre-verified so the burst of follow-up WebSocket/HTTP
+        // sessions on this login aren't re-blocked once the flag is consumed
+        // (issue #27 logout loop).
+        if (isEnrolled
+            && config.AllowQuickConnectForEnrolledUsers
+            && _challengeStore.ConsumeQuickConnectPending(info.UserId))
+        {
+            if (!string.IsNullOrEmpty(token))
+            {
+                _challengeStore.MarkTokenVerified(token);
+            }
+
+            _challengeStore.MarkDevicePreVerified(info.UserId, info.DeviceId);
+            _logger.LogInformation(
+                "[2FA] Allowed Quick Connect session for {Name} — QC pass-through enabled",
+                info.UserName);
+            return;
+        }
+
         // Fresh, unverified login for a user who needs 2FA. Block the token
         // FIRST (in-memory, instant) so RequestBlockerMiddleware 403s every
         // request on it while the heavier revoke/teardown below runs.

@@ -128,6 +128,21 @@ public class RequestBlockerMiddleware
             return;
         }
 
+        // Quick Connect pass-through (opt-in). When a verified user authorizes a
+        // Quick Connect code on this (already-signed-in) device, the INCOMING
+        // device's session has a different deviceId but the SAME userId. Set a
+        // single-consume, user-scoped flag so the next SessionStarted for this user
+        // is allowed through by the failsafe instead of revoked. Gated on the admin
+        // toggle; default off keeps the revoke-on-QC behaviour.
+        if (config.AllowQuickConnectForEnrolledUsers
+            && userId != Guid.Empty
+            && path.Contains("/QuickConnect/Authorize", StringComparison.OrdinalIgnoreCase))
+        {
+            _challengeStore.MarkQuickConnectPending(userId);
+            _logger.LogInformation(
+                "[2FA] QuickConnect authorize by {UserId} — one-shot allow for incoming session", userId);
+        }
+
         if (userId != Guid.Empty && !string.IsNullOrEmpty(token) && _challengeStore.IsTokenBlocked(token))
         {
             _logger.LogInformation("[2FA] BLOCKED {Path} user={UserId} (token-scoped) — 2FA not completed",

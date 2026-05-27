@@ -49,6 +49,16 @@ public class ChallengeStore : IDisposable
     // apart and fall back to reversible block-only for enrollment.
     private readonly ConcurrentDictionary<string, DateTime> _enrollmentDevices = new();
 
+    // Quick Connect pass-through. Keyed by USER (not device) and single-consume:
+    // in Quick Connect you approve your own login from an already-authenticated
+    // device, so the approver's userId matches the incoming session's userId — but
+    // the incoming (TV/phone) session has a DIFFERENT deviceId, so a device-scoped
+    // flag can't bridge the two. Set when a verified user hits /QuickConnect/Authorize
+    // (only if AllowQuickConnectForEnrolledUsers is on); consumed once by the next
+    // SessionStarted for that user, which the failsafe then allows instead of
+    // revoking. 2-minute TTL bounds the window.
+    private readonly ConcurrentDictionary<Guid, DateTime> _quickConnectPending = new();
+
     // PERF: soft cap so a botnet can't OOM us before the 60s cleanup sweep.
     private const int SoftCapPerDict = 100_000;
 
@@ -94,6 +104,7 @@ public class ChallengeStore : IDisposable
     /// Live access tokens are revoked separately via SessionTerminationService.</summary>
     public void WipeAllForUser(Guid userId)
     {
+        _quickConnectPending.TryRemove(userId, out _);
         var prefix = $"{userId:N}|";
         var userless = $"user:{userId:N}";
         foreach (var kv in _preVerifiedDevices)
@@ -188,6 +199,27 @@ public class ChallengeStore : IDisposable
             _verifiedTokens.TryRemove(token, out _);
         }
         return false;
+    }
+
+    /// <summary>Record that <paramref name="deviceId"/> just hit the Quick Connect
+    /// auth endpoint, so the SessionStarted failsafe can recognise the resulting
+    /// session. 60s TTL — long enough for the auth round-trip, short enough to
+    /// limit cross-protocol confusion. Deviceless calls are ignored.</summary>
+    /// <summary>Mark a pending cross-device Quick Connect acceptance for a user,
+    /// set when that (verified) user authorizes a QC code. Single-consume, 2-minute
+    /// TTL.</summary>
+    public void MarkQuickConnectPending(Guid userId)
+    {
+        if (userId == Guid.Empty) return;
+        _quickConnectPending[userId] = DateTime.UtcNow.AddMinutes(2);
+    }
+
+    /// <summary>Atomically claim a pending Quick Connect acceptance. Returns true at
+    /// most once per mark, so a single approval can't wave through multiple
+    /// sessions.</summary>
+    public bool ConsumeQuickConnectPending(Guid userId)
+    {
+        return _quickConnectPending.TryRemove(userId, out var exp) && exp > DateTime.UtcNow;
     }
 
     private static void EnforceCap(ConcurrentDictionary<string, DateTime> dict)
@@ -307,6 +339,10 @@ public class ChallengeStore : IDisposable
         foreach (var kv in _enrollmentDevices)
         {
             if (kv.Value <= now) _enrollmentDevices.TryRemove(kv.Key, out _);
+        }
+        foreach (var kv in _quickConnectPending)
+        {
+            if (kv.Value <= now) _quickConnectPending.TryRemove(kv.Key, out _);
         }
     }
 
