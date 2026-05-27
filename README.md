@@ -1,6 +1,6 @@
 ![GitHub license](https://img.shields.io/github/license/neptunehub/jellyfin-plugin-mfa.svg)
 ![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/jellyfin-plugin-mfa?label=latest-tag)
-![Media Server Support: Jellyfin 10.10.7](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.10.7-blue?style=flat-square&logo=server&logoColor=white)
+![Media Server Support: Jellyfin 10.10.7 & 10.11.x](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.10.7%20%26%2010.11.x-blue?style=flat-square&logo=server&logoColor=white)
 
 # Multi-Factor Authentication (MFA) for Jellyfin
 
@@ -11,10 +11,11 @@
 Per-user TOTP authentication with single-use recovery codes, enforced at sign-in so a password
 alone never grants a session. It also supports Quick Connect for third-party devices.
 
-## Supported version
+## Supported versions
 
-Targets **Jellyfin 10.10.7 only**, built against the 10.10 server ABI (`TargetAbi` 10.10.0.0) on
-.NET 8. Other Jellyfin releases are not supported.
+Supports **Jellyfin 10.10.7** (ABI 10.10.0.0, .NET 8) **and the latest Jellyfin 10.11.\*** (ABI
+10.11.0.0, .NET 9). The plugin catalog serves the right build to each server automatically. The
+10.10 build lives on the `main` branch; the 10.11 build on the `10.11` branch.
 
 ## What it does
 
@@ -69,11 +70,12 @@ which Jellyfin or your reverse proxy handles.
 
 ## Build locally
 
-Requires the .NET SDK 8.0.
+Requires the .NET SDK 8.0 (10.10 build) or 9.0 (10.11 build).
 
 ```bash
 git clone https://github.com/NeptuneHub/jellyfin-plugin-mfa.git
 cd jellyfin-plugin-mfa
+git checkout 10.11      # only for the Jellyfin 10.11 build (.NET 9); skip for 10.10
 .\build.ps1     # Windows
 ./build.sh      # Linux / macOS
 ```
@@ -88,6 +90,10 @@ the **Build Plugin** workflow and enter the new version (for example `v1.0.1`). 
 version in the csproj, `meta.json`, and `manifest.json`, builds and zips the plugin with md5 and
 sha256 checksums, generates a changelog from the commits since the last release, commits the bump,
 and publishes the GitHub Release with the assets attached.
+
+For the **Jellyfin 10.11** build, run the same workflow with **Use workflow from: `10.11`** and the
+same version (e.g. `v1.0.4`). It publishes the 10.11 variant (version `X.Y.Z.1`, ABI 10.11.0.0) and
+adds it to the shared `manifest.json` on `main` alongside the 10.10 entry.
 
 ## Install from a local build
 
