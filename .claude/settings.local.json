@@ -57,7 +57,8 @@
       "PowerShell($env:PATH = \"C:\\\\Users\\\\gcola\\\\.dotnet;$env:PATH\"; & \"$PWD\\\\build.ps1\" -Configuration Release 2>&1 | Select-Object -Last 6; Get-Item \"$PWD\\\\dist\\\\Jellyfin.Plugin.Mfa\\\\Jellyfin.Plugin.Mfa.dll\" | Select-Object LastWriteTime, Length)",
       "Bash(git rm *)",
       "PowerShell(& \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\" build Jellyfin.Plugin.Mfa.sln --configuration Release -clp:NoSummary 2>&1 | Select-Object -Last 8)",
-      "Bash(git -c core.quotepath=false status --short .github/)"
+      "Bash(git -c core.quotepath=false status --short .github/)",
+      "PowerShell(python \"$env:TEMP\\\\make_logo.py\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\gcola\\.claude\\plans"

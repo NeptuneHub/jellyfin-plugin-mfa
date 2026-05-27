@@ -1,7 +1,15 @@
+![GitHub license](https://img.shields.io/github/license/neptunehub/jellyfin-plugin-mfa.svg)
+![Latest Tag](https://img.shields.io/github/v/tag/neptunehub/jellyfin-plugin-mfa?label=latest-tag)
+![Media Server Support: Jellyfin 10.10.7](https://img.shields.io/badge/Media%20Server-Jellyfin%2010.10.7-blue?style=flat-square&logo=server&logoColor=white)
+
 # Multi-Factor Authentication (MFA) for Jellyfin
 
+<p align="center">
+  <img src="https://github.com/NeptuneHub/jellyfin-plugin-mfa/blob/main/mfa.png?raw=true" alt="MFA Logo" width="480">
+</p>
+
 Per-user TOTP authentication with single-use recovery codes, enforced at sign-in so a password
-alone never grants a session. It also support quickconnect for third party device.
+alone never grants a session. It also supports Quick Connect for third-party devices.
 
 ## Supported version
 
@@ -10,35 +18,23 @@ Targets **Jellyfin 10.10.7 only**, built against the 10.10 server ABI (`TargetAb
 
 ## What it does
 
-- **Per-user TOTP enrollment** — scan a QR code (or enter the secret) in any RFC 6238 authenticator
+- **Per-user TOTP enrollment.** Scan a QR code (or enter the secret) in any RFC 6238 authenticator
   app and confirm a 6-digit code.
-- **Single-use recovery codes** — ten salted, hashed backup codes, regenerable, each usable once.
-- **Enforcement at sign-in** — an enrolled user must provide the second factor every time.
-- **Modified web login page** — the standard Jellyfin sign-in page gains a code field, so username,
+- **Single-use recovery codes.** Ten salted, hashed backup codes, regenerable, each usable once.
+- **Enforcement at sign-in.** An enrolled user must provide the second factor every time.
+- **Modified web login page.** The standard Jellyfin sign-in page gains a code field, so username,
   password and code are entered together. Users without 2FA leave it blank and sign in as usual.
-- **Per-user menu link** — a *Two-Factor Auth* entry is added to the user menu for enrolling and
+- **Per-user menu link.** A *Two-Factor Auth* entry is added to the user menu for enrolling and
   managing 2FA (or visit `/Mfa/Setup`).
-- **Quick Connect** — for enrolled users it is allowed only when enabled in the admin settings;
+- **Quick Connect.** For enrolled users it is allowed only when enabled in the admin settings;
   otherwise those sign-ins are blocked until 2FA is completed. Users without 2FA are unaffected.
-- **Admin configuration** (Dashboard → Plugins → Multi-Factor Authentication) — set the enforcement
-  scope (Optional / Admins only / Everyone), toggle pre-mint blocking of the native login, toggle
+- **Admin configuration** (Dashboard > Plugins > Multi-Factor Authentication). Set the enforcement
+  scope (Optional, Admins only, or Everyone), toggle pre-mint blocking of the native login, toggle
   Quick Connect for enrolled users, review the audit log, and reset or disable a locked-out user
   (which also signs out their active sessions).
 
-Third-party clients (mobile, TV, scripts) use the API directly and are unaffected: a user with no
+Third-party clients (mobile, TV, scripts) use the API directly and are unaffected. A user with no
 2FA signs in normally; an enrolled user completes 2FA on the web sign-in page.
-
-## Security
-
-- TOTP secrets are stored **AES-256-GCM encrypted**, with the ciphertext cryptographically bound to
-  the owning user id so a secret cannot be moved between accounts.
-- Recovery codes are stored as **PBKDF2-SHA256 salted hashes**, never in clear text.
-- The encryption key file is locked down on every load — `0600` on Unix and a restrictive ACL on
-  Windows (current account, SYSTEM, Administrators only).
-- TOTP codes are single-use, with a replay floor that survives restarts.
-- Secret comparisons are constant-time; verification is protected by per-IP and per-user rate limits
-  with account lockout.
-- Disabling or resetting a user's 2FA revokes that user's live sessions.
 
 The plugin does not trust `X-Forwarded-For` on its own. If Jellyfin runs behind a reverse proxy,
 configure Jellyfin's known-proxies / forwarded-headers settings so rate limiting sees the real
@@ -46,31 +42,30 @@ client address.
 
 ## Crypto Information
 
-Every cryptographic primitive used by the plugin, mapped to the relevant NIST standard. All random
-values come from the OS CSPRNG (`RandomNumberGenerator`); no insecure `System.Random` is used
-anywhere, and there is no MD5, SHA-1 outside the RFC-mandated TOTP, DES/3DES/RC4, ECB mode, or
-static IV/nonce.
+All random values use the operating system's secure RNG. There is no MD5, DES, RC4, or ECB mode, and
+no SHA-1 except inside TOTP, where RFC 6238 requires it.
 
-| Where used | Algorithm | NIST standard | Quantum-safe? | Status |
-|---|---|---|---|---|
-| TOTP secret at rest | AES-256-GCM (256-bit key, 96-bit random nonce, 128-bit tag), AAD-bound to user id | FIPS 197 + SP 800-38D | Yes (AES-256) | Maximum — no stronger option |
-| TOTP code generation | HMAC-SHA1, 6 digits, 30 s (RFC 6238 default) | SP 800-63B (TOTP); HMAC-SHA1 allowed by SP 800-107 | Yes (symmetric) | Kept for authenticator-app compatibility; HMAC-SHA1 is not broken (SHA-1 collisions don't affect HMAC) |
-| Recovery codes at rest | PBKDF2-HMAC-SHA256, 100k iterations, 128-bit salt | SP 800-132 | Yes | Sufficient — codes are high-entropy (~49 bits) and verification loops all codes, so higher iteration counts add latency/DoS, not security |
-| Audit-log hash chain | HMAC-SHA256, separate keyed file | FIPS 198-1 + 180-4 | Yes | Strong — tamper-evident |
-| Access-token verification (trusted sessions) | SHA-256 + constant-time compare (`FixedTimeEquals`), device-bound | FIPS 180-4 | Yes (256-bit) | Correct for a high-entropy token; only the hash is stored, never the token |
-| Keys, salts, nonces, challenge tokens | 256-bit random via OS CSPRNG | SP 800-90A | n/a | Maximum-practical |
-| Key establishment / digital signatures (asymmetric) | none used | ML-KEM / ML-DSA (FIPS 203 / 204) | — | Not applicable — no asymmetric crypto to migrate |
+| Use | Algorithm | NIST reference |
+|---|---|---|
+| TOTP secret storage | AES-256-GCM, bound to the user id | FIPS 197, SP 800-38D |
+| TOTP codes | HMAC-SHA1, 6 digits, 30s | RFC 6238, SP 800-63B |
+| Recovery codes | PBKDF2-HMAC-SHA256, 100k iterations, salted | SP 800-132 |
+| Audit log | HMAC-SHA256 with a separate key | FIPS 198-1 |
+| Trusted-session tokens | SHA-256, constant-time compare, device-bound | FIPS 180-4 |
+| Keys, salts, nonces, tokens | 256-bit from the OS secure RNG | SP 800-90A |
 
-**Post-quantum note.** NIST's PQC standards — **ML-KEM** (FIPS 203), **ML-DSA** (FIPS 204) and
-**SLH-DSA** (FIPS 205) — replace *asymmetric* algorithms (RSA, ECDSA, ECDH), the only ones broken by
-Shor's algorithm. This plugin uses **no asymmetric cryptography**, so there is nothing to migrate.
-Its symmetric ciphers and hashes are only marginally affected by Grover's algorithm, and at
-256-bit (AES-256, SHA-256/HMAC-SHA256) are already considered quantum-resistant per NISTIR 8105.
-Post-quantum key exchange, where it eventually matters, lives in the **TLS transport** handled by
-Jellyfin / your reverse proxy — outside this plugin.
+A few notes:
 
-This is a source-level mapping to published standards, not a formal FIPS validation or third-party
-cryptographic audit.
+- HMAC-SHA1 in TOTP is safe. The known SHA-1 weakness is about collisions, which do not affect HMAC.
+  SHA-1 is kept because it is the only variant every authenticator app supports.
+- PBKDF2 stays at 100k iterations on purpose. Recovery codes are random and high-entropy, and each
+  attempt checks every stored code, so raising the count adds delay without adding real security.
+- Trusted-session tokens are stored only as a hash, never the token itself.
+
+NIST's post-quantum standards (ML-KEM, ML-DSA) replace asymmetric algorithms like RSA and ECC. This
+plugin uses none of those, so there is nothing to migrate. Its symmetric ciphers and hashes are
+256-bit and already regarded as quantum-safe. Quantum-safe key exchange belongs to the TLS layer,
+which Jellyfin or your reverse proxy handles.
 
 ## Build locally
 
@@ -86,6 +81,14 @@ cd jellyfin-plugin-mfa
 You get a ready-to-install package in `dist/Jellyfin.Plugin.Mfa/` (`Jellyfin.Plugin.Mfa.dll`,
 `Otp.NET.dll`, `QRCoder.dll`, `meta.json`).
 
+## Release (maintainers)
+
+Maintainers do not need to build or tag releases by hand. In the repository's **Actions** tab, run
+the **Build Plugin** workflow and enter the new version (for example `v1.0.1`). It then bumps the
+version in the csproj, `meta.json`, and `manifest.json`, builds and zips the plugin with md5 and
+sha256 checksums, generates a changelog from the commits since the last release, commits the bump,
+and publishes the GitHub Release with the assets attached.
+
 ## Install from a local build
 
 Copy `dist/Jellyfin.Plugin.Mfa/` into Jellyfin's `plugins` folder, then restart Jellyfin.
@@ -96,7 +99,7 @@ Copy `dist/Jellyfin.Plugin.Mfa/` into Jellyfin's `plugins` folder, then restart 
 
 ## Install from the manifest
 
-1. In Jellyfin, go to **Dashboard → Plugins → Catalog** and open the repository settings (gear icon).
+1. In Jellyfin, go to **Dashboard > Plugins > Catalog** and open the repository settings (gear icon).
 2. Add a repository pointing at:
    ```
    https://raw.githubusercontent.com/NeptuneHub/jellyfin-plugin-mfa/main/manifest.json

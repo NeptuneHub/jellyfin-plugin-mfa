@@ -6,6 +6,7 @@
     "overview": "Per-user TOTP multi-factor authentication with recovery codes for Jellyfin.",
     "owner": "NeptuneHub",
     "category": "General",
+    "imageUrl": "https://raw.githubusercontent.com/NeptuneHub/jellyfin-plugin-mfa/main/mfa.png",
     "versions": [
       {
         "version": "1.0.1.0",
