@@ -39,6 +39,16 @@ public class ChallengeStore : IDisposable
     // re-block an already-verified token and log the user out every few minutes.
     private readonly ConcurrentDictionary<string, DateTime> _verifiedTokens = new();
 
+    // (user, device) pairs in the middle of forced enrollment. The /Authenticate
+    // enrollment branch mints a real token, blocks it, and stashes it in the
+    // challenge so it can be handed back once the user enrolls. SEC S3: the
+    // SessionStarted failsafe now REVOKES unverified tokens instead of merely
+    // blocking them — but it must NOT revoke that enrollment token, or the
+    // post-enrollment hand-back would return a dead token. This mark is set
+    // BEFORE the token is minted (race-free) so the failsafe can tell the two
+    // apart and fall back to reversible block-only for enrollment.
+    private readonly ConcurrentDictionary<string, DateTime> _enrollmentDevices = new();
+
     // PERF: soft cap so a botnet can't OOM us before the 60s cleanup sweep.
     private const int SoftCapPerDict = 100_000;
 
@@ -93,6 +103,42 @@ public class ChallengeStore : IDisposable
                 _preVerifiedDevices.TryRemove(kv.Key, out _);
             }
         }
+        foreach (var kv in _enrollmentDevices)
+        {
+            if (kv.Key.StartsWith(prefix, StringComparison.Ordinal) || kv.Key == userless)
+            {
+                _enrollmentDevices.TryRemove(kv.Key, out _);
+            }
+        }
+    }
+
+    /// <summary>Mark a (user, device) pair as mid-enrollment so the failsafe
+    /// blocks (reversibly) rather than revokes its token. TTL covers the
+    /// enrollment challenge lifetime plus a buffer. Deviceless calls are ignored
+    /// — the failsafe falls back to revoke, which is the safe default.</summary>
+    public void MarkEnrollmentInProgress(Guid userId, string? deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+        {
+            return;
+        }
+
+        var ttl = Plugin.Instance?.Configuration?.ChallengeTokenTtlSeconds ?? 300;
+        _enrollmentDevices[DeviceKey(userId, deviceId)] = DateTime.UtcNow.AddSeconds(ttl + 60);
+        EnforceCap(_enrollmentDevices);
+    }
+
+    public bool IsEnrollmentInProgress(Guid userId, string? deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId)) return false;
+        return _enrollmentDevices.TryGetValue(DeviceKey(userId, deviceId), out var exp)
+            && exp > DateTime.UtcNow;
+    }
+
+    public void ClearEnrollmentInProgress(Guid userId, string? deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId)) return;
+        _enrollmentDevices.TryRemove(DeviceKey(userId, deviceId), out _);
     }
 
     /// <summary>Block a specific access token. RequestBlockerMiddleware 403s
@@ -257,6 +303,10 @@ public class ChallengeStore : IDisposable
         foreach (var kv in _verifiedTokens)
         {
             if (kv.Value <= now) _verifiedTokens.TryRemove(kv.Key, out _);
+        }
+        foreach (var kv in _enrollmentDevices)
+        {
+            if (kv.Value <= now) _enrollmentDevices.TryRemove(kv.Key, out _);
         }
     }
 

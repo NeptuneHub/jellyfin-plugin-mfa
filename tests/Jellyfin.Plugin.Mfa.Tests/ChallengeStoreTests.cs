@@ -223,6 +223,61 @@ public class ChallengeStoreTests
         Assert.Equal(2, data.AttemptCount);
     }
 
+    // ---- S3: enrollment-in-progress guard (block-only vs revoke) ----------
+
+    [Fact]
+    public void EnrollmentInProgress_is_scoped_to_user_and_device()
+    {
+        using var store = new ChallengeStore();
+        var userId = Guid.NewGuid();
+
+        store.MarkEnrollmentInProgress(userId, "dev-1");
+
+        Assert.True(store.IsEnrollmentInProgress(userId, "dev-1"));
+        Assert.False(store.IsEnrollmentInProgress(userId, "dev-2"));
+        Assert.False(store.IsEnrollmentInProgress(Guid.NewGuid(), "dev-1"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void MarkEnrollmentInProgress_ignores_empty_deviceId(string? deviceId)
+    {
+        // Deviceless calls must not mark — the failsafe then falls back to the
+        // safe default (revoke) rather than block-only.
+        using var store = new ChallengeStore();
+        var userId = Guid.NewGuid();
+
+        store.MarkEnrollmentInProgress(userId, deviceId);
+
+        Assert.False(store.IsEnrollmentInProgress(userId, deviceId));
+    }
+
+    [Fact]
+    public void ClearEnrollmentInProgress_removes_the_mark()
+    {
+        using var store = new ChallengeStore();
+        var userId = Guid.NewGuid();
+        store.MarkEnrollmentInProgress(userId, "dev-1");
+
+        store.ClearEnrollmentInProgress(userId, "dev-1");
+
+        Assert.False(store.IsEnrollmentInProgress(userId, "dev-1"));
+    }
+
+    [Fact]
+    public void WipeAllForUser_clears_enrollment_marks()
+    {
+        using var store = new ChallengeStore();
+        var userId = Guid.NewGuid();
+        store.MarkEnrollmentInProgress(userId, "dev-1");
+
+        store.WipeAllForUser(userId);
+
+        Assert.False(store.IsEnrollmentInProgress(userId, "dev-1"));
+    }
+
     [Fact]
     public async Task IncrementAttempts_is_thread_safe_no_lost_updates()
     {

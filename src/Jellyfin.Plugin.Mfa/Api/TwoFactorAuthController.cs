@@ -358,6 +358,9 @@ public class TwoFactorAuthController : ControllerBase
         if (!string.IsNullOrEmpty(challenge.DeviceId))
         {
             _challengeStore.MarkDevicePreVerified(challenge.UserId, challenge.DeviceId);
+            // Enrollment done — drop the block-only guard so the (user, device) is
+            // governed normally again.
+            _challengeStore.ClearEnrollmentInProgress(challenge.UserId, challenge.DeviceId);
         }
 
         await _store.AddAuditEntryAsync(new AuditEntry
@@ -577,6 +580,14 @@ public class TwoFactorAuthController : ControllerBase
             if (!requiresPostPasswordChallenge)
             {
                 _challengeStore.MarkDevicePreVerified(user.Id, deviceId);
+            }
+            else
+            {
+                // SEC S3: about to mint a token we INTEND to keep (it's stashed and
+                // handed back after enrollment). Mark this (user, device) so the
+                // failsafe blocks it reversibly instead of revoking it. Set before
+                // the mint so it's visible when SessionStarted fires (race-free).
+                _challengeStore.MarkEnrollmentInProgress(user.Id, deviceId);
             }
 
             MediaBrowser.Controller.Authentication.AuthenticationResult result;
@@ -927,12 +938,98 @@ public class TwoFactorAuthController : ControllerBase
         return Ok();
     }
 
+    /// <summary>Self-service disable. Requires a valid current second factor
+    /// (TOTP or recovery code) so that a stolen session token alone cannot strip
+    /// the account's 2FA — the caller must also prove possession of the factor.
+    /// (Admins reset a locked-out user's 2FA via <see cref="ToggleUser"/>, which
+    /// is gated by elevation and intentionally needs no code.)</summary>
     [HttpPost("Setup/Disable")]
     [Authorize]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public async Task<ActionResult> DisableTotp()
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    public async Task<ActionResult> DisableTotp([FromBody, Required] DisableTotpRequest request)
     {
         var userId = GetCurrentUserId();
+        var clientIp = ClientIp();
+
+        if (FieldTooLong(request.Code))
+        {
+            return BadRequest(new { message = "Field too long." });
+        }
+
+        var userData = await _store.GetUserDataAsync(userId).ConfigureAwait(false);
+
+        // Not enrolled → nothing to tear down; succeed idempotently without a code.
+        if (!(userData.TotpEnabled && userData.TotpVerified))
+        {
+            return Ok();
+        }
+
+        if (await _store.IsLockedOutAsync(userId).ConfigureAwait(false))
+        {
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = "Account is locked out. Try again later." });
+        }
+
+        // Per-user rate limit so a stolen token can't brute the code space here
+        // any faster than on the sign-in path.
+        var rl = _rateLimiter.CheckAndRecord("disable_user:" + userId.ToString("N"), 10, TimeSpan.FromMinutes(5));
+        if (!rl.allowed)
+        {
+            Response.Headers.Append("Retry-After", rl.retryAfterSeconds.ToString(CultureInfo.InvariantCulture));
+            return StatusCode(StatusCodes.Status429TooManyRequests, new
+            {
+                message = $"Too many attempts. Try again in {rl.retryAfterSeconds} seconds.",
+            });
+        }
+
+        if (string.IsNullOrEmpty(request.Code))
+        {
+            return Unauthorized(new { message = "A current authenticator or recovery code is required to disable two-factor authentication." });
+        }
+
+        // Accept either a recovery code or a live TOTP code — same matching rules
+        // as the sign-in path.
+        var valid = false;
+        var maybeRecovery = request.Code.Replace("-", string.Empty).Replace(" ", string.Empty);
+        if (maybeRecovery.Length >= 8 && maybeRecovery.All(char.IsLetterOrDigit))
+        {
+            valid = FindRecoveryCodeIndex(userData, request.Code) >= 0;
+        }
+
+        if (!valid && request.Code.Length == 6 && request.Code.All(char.IsDigit)
+            && !string.IsNullOrEmpty(userData.EncryptedTotpSecret))
+        {
+            string secret;
+            try
+            {
+                secret = _totpService.DecryptSecret(userData.EncryptedTotpSecret, userId);
+            }
+            catch
+            {
+                return StatusCode(500, new { message = "TOTP secret is corrupted. Ask an administrator to reset your 2FA." });
+            }
+
+            valid = _totpService.ValidateCode(secret, request.Code, userId.ToString(),
+                userData.LastUsedTotpStep, out _);
+        }
+
+        if (!valid)
+        {
+            await _store.RecordFailedAttemptAsync(userId).ConfigureAwait(false);
+            await _store.AddAuditEntryAsync(new AuditEntry
+            {
+                Timestamp = DateTime.UtcNow,
+                UserId = userId,
+                Username = _userManager.GetUserById(userId)?.Username ?? userId.ToString(),
+                RemoteIp = clientIp,
+                Result = AuditResult.Failed,
+                Method = "self_disable",
+            }).ConfigureAwait(false);
+            return Unauthorized(new { message = "Invalid code." });
+        }
+
         await _store.MutateAsync(userId, ud =>
         {
             ud.TotpEnabled = false;
@@ -945,13 +1042,15 @@ public class TwoFactorAuthController : ControllerBase
 
         // Revoke the second factor AND any live session, then clear pre-verify.
         await _sessionTerm.LogoutAllForUserAsync(userId).ConfigureAwait(false);
+        await _store.ResetFailedAttemptsAsync(userId).ConfigureAwait(false);
+        _rateLimiter.Reset("disable_user:" + userId.ToString("N"));
 
         await _store.AddAuditEntryAsync(new AuditEntry
         {
             Timestamp = DateTime.UtcNow,
             UserId = userId,
             Username = _userManager.GetUserById(userId)?.Username ?? userId.ToString(),
-            RemoteIp = ClientIp(),
+            RemoteIp = clientIp,
             Result = AuditResult.ConfigChanged,
             Method = "self_disable",
         }).ConfigureAwait(false);

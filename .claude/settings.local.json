@@ -30,7 +30,12 @@
       "PowerShell(Write-Output \"PATH dotnet:\"; \\(Get-Command dotnet -ErrorAction SilentlyContinue\\).Source; Write-Output \"---SDKS---\"; try { dotnet --list-sdks } catch { \"none\" }; Write-Output \"---WHERE---\"; where.exe dotnet 2>$null; Write-Output \"---PROGFILES---\"; Test-Path \"C:\\\\Program Files\\\\dotnet\\\\dotnet.exe\")",
       "PowerShell(dotnet --info 2>&1 | Select-Object -First 25; Write-Output \"---DIRS---\"; Get-ChildItem \"C:\\\\Program Files\\\\dotnet\\\\sdk\" -ErrorAction SilentlyContinue | Select-Object Name; Get-ChildItem \"$env:USERPROFILE\\\\.dotnet\\\\sdk\" -ErrorAction SilentlyContinue | Select-Object Name)",
       "PowerShell(& \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\" build src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj -clp:NoSummary 2>&1 | Select-Object -Last 30)",
-      "PowerShell(& \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\" test tests/Jellyfin.Plugin.Mfa.Tests/Jellyfin.Plugin.Mfa.Tests.csproj -clp:NoSummary 2>&1 | Select-Object -Last 35)"
+      "PowerShell(& \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\" test tests/Jellyfin.Plugin.Mfa.Tests/Jellyfin.Plugin.Mfa.Tests.csproj -clp:NoSummary 2>&1 | Select-Object -Last 35)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\gcola\\\\Music\\\\jellyfin-plugin-mfa\" -Force)",
+      "Bash(Select-Object Name, Mode)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\gcola\\\\Music\\\\jellyfin-plugin-mfa\" -Force | Select-Object Name, @{Name=\"Type\"; Expression={if \\($_.PSIsContainer\\) { \"DIR\" } else { \"FILE\" }}})",
+      "PowerShell(& \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\" test tests/Jellyfin.Plugin.Mfa.Tests/Jellyfin.Plugin.Mfa.Tests.csproj -clp:NoSummary 2>&1 | Select-Object -Last 25)",
+      "PowerShell(& \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\" test tests/Jellyfin.Plugin.Mfa.Tests/Jellyfin.Plugin.Mfa.Tests.csproj -clp:NoSummary 2>&1 | Select-Object -Last 8)"
     ],
     "additionalDirectories": [
       "C:\\Users\\gcola\\.claude\\plans"

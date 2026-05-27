@@ -14,6 +14,14 @@ public class ConfirmTotpRequest
     public string Code { get; set; } = string.Empty;
 }
 
+/// <summary>Self-service 2FA disable requires re-proving possession of the
+/// current second factor (TOTP code or recovery code), so a stolen session
+/// token alone can't strip an account's 2FA.</summary>
+public class DisableTotpRequest
+{
+    public string Code { get; set; } = string.Empty;
+}
+
 public class ChallengeTokenRequest
 {
     public string ChallengeToken { get; set; } = string.Empty;

@@ -131,13 +131,24 @@ public class AuthenticationEventHandler : IHostedService
 
         // Fresh, unverified login for a user who needs 2FA. Block the token
         // FIRST (in-memory, instant) so RequestBlockerMiddleware 403s every
-        // request on it, then end the session.
+        // request on it while the heavier revoke/teardown below runs.
         if (!string.IsNullOrEmpty(token))
         {
             _challengeStore.BlockToken(token);
         }
 
-        _logger.LogInformation("[2FA] Blocked unverified session for {Name} — 2FA required", info.UserName);
+        // SEC S3: distinguish a genuinely-abandoned token (Quick Connect, or any
+        // native login that slipped past the pre-mint block — the user will get a
+        // fresh token via /Mfa/Authenticate) from the forced-enrollment token the
+        // /Authenticate enrollment branch deliberately minted, blocked, and stashed
+        // to hand back after the user enrolls. The former we REVOKE so it can't be
+        // resurrected after a restart (the in-memory block is volatile); the latter
+        // we leave block-only (reversible) so enrollment can complete.
+        var enrollmentInProgress = _challengeStore.IsEnrollmentInProgress(info.UserId, info.DeviceId);
+
+        _logger.LogInformation(
+            "[2FA] {Action} unverified session for {Name} — 2FA required",
+            enrollmentInProgress ? "Blocked (enrolling)" : "Revoked", info.UserName);
 
         await _store.AddAuditEntryAsync(new AuditEntry
         {
@@ -148,16 +159,27 @@ public class AuthenticationEventHandler : IHostedService
             DeviceId = info.DeviceId ?? string.Empty,
             DeviceName = info.DeviceName ?? string.Empty,
             Result = AuditResult.ChallengeIssued,
-            Method = "blocked",
+            Method = enrollmentInProgress ? "blocked" : "revoked",
         }).ConfigureAwait(false);
 
         try
         {
-            await _sessionManager.ReportSessionEnded(info.Id).ConfigureAwait(false);
+            if (!enrollmentInProgress && !string.IsNullOrEmpty(token))
+            {
+                // Revoke the access token in Jellyfin's persistent store — this
+                // also ends the session, so no separate ReportSessionEnded needed.
+                await _sessionManager.Logout(token).ConfigureAwait(false);
+            }
+            else
+            {
+                // Enrollment token (keep it alive, just end the unverified session)
+                // or a session whose token couldn't be resolved (best effort).
+                await _sessionManager.ReportSessionEnded(info.Id).ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[2FA] Failed to end unverified session for {Name}", info.UserName);
+            _logger.LogWarning(ex, "[2FA] Failed to tear down unverified session for {Name}", info.UserName);
         }
     }
 }
