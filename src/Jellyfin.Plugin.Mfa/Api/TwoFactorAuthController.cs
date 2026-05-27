@@ -7,7 +7,7 @@ using System.Net.Mime;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
-using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.Mfa.Configuration;
 using Jellyfin.Plugin.Mfa.Models;
 using Jellyfin.Plugin.Mfa.Services;
@@ -106,7 +106,9 @@ public class TwoFactorAuthController : ControllerBase
 
         try
         {
-            var isAdmin = _userManager.GetUserById(userId)?.HasPermission(PermissionKind.IsAdministrator) ?? false;
+            // Jellyfin 10.11 removed User.HasPermission; read Permissions directly.
+            var isAdmin = _userManager.GetUserById(userId) is { } adminUser
+                && adminUser.Permissions.Any(p => p.Kind == PermissionKind.IsAdministrator && p.Value);
             return config.ShouldEnforceFor(isAdmin);
         }
         catch

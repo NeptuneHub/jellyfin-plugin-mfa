@@ -1,7 +1,9 @@
+using System.Linq;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
-using Jellyfin.Data.Enums;
+using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.Mfa.Configuration;
 using Jellyfin.Plugin.Mfa.Models;
 using MediaBrowser.Controller.Library;
@@ -184,7 +186,7 @@ public class RequestBlockerMiddleware
             return false;
         }
 
-        Jellyfin.Data.Entities.User? user;
+        User? user;
         try
         {
             if (normalizedPath.Equals("/Users/AuthenticateByName", StringComparison.OrdinalIgnoreCase))
@@ -228,7 +230,9 @@ public class RequestBlockerMiddleware
         bool mustEnforce;
         try
         {
-            var isAdmin = userManager.GetUserById(user.Id)?.HasPermission(PermissionKind.IsAdministrator) ?? false;
+            // Jellyfin 10.11 removed User.HasPermission; read Permissions directly.
+            var isAdmin = userManager.GetUserById(user.Id) is { } adminUser
+                && adminUser.Permissions.Any(p => p.Kind == PermissionKind.IsAdministrator && p.Value);
             mustEnforce = config.ShouldEnforceFor(isAdmin);
         }
         catch (Exception ex)

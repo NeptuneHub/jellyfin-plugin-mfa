@@ -3,8 +3,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Jellyfin.Data.Enums;
 using Jellyfin.Data.Queries;
+using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Plugin.Mfa.Models;
 using MediaBrowser.Controller.Devices;
 using MediaBrowser.Controller.Library;
@@ -110,8 +110,10 @@ public class AuthenticationEventHandler : IHostedService
         bool mustEnforce;
         try
         {
-            var isAdmin = _userManager.GetUserById(info.UserId)?
-                .HasPermission(PermissionKind.IsAdministrator) ?? false;
+            // Jellyfin 10.11 removed User.HasPermission; read the Permissions
+            // collection directly (see RequestBlockerMiddleware for the same).
+            var isAdmin = _userManager.GetUserById(info.UserId) is { } adminUser
+                && adminUser.Permissions.Any(p => p.Kind == PermissionKind.IsAdministrator && p.Value);
             mustEnforce = config.ShouldEnforceFor(isAdmin);
         }
         catch (Exception ex)

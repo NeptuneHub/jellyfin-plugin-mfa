@@ -37,13 +37,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 10.11 branch. Pinned to 10.11.8 (the version the upstream
-         ZL154/JellyfinSecurity fork is proven against). The plugin targets
-         ABI 10.11.0.0 (see meta.json) and loads on any Jellyfin 10.11.x server.
-         Jellyfin 10.11.x runs on .NET 9, hence the net9.0 TargetFramework above.
-         The 10.10.x build lives on the main branch. -->
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.8" />
-    <PackageReference Include="Jellyfin.Model" Version="10.11.8" />
+    <!-- 10.11 branch. Pinned to 10.11.10 (latest 10.11.x on NuGet). The plugin
+         targets ABI 10.11.0.0 (see meta.json) and loads on any Jellyfin 10.11.x
+         server. Jellyfin 10.11.x runs on .NET 9, hence the net9.0 TargetFramework
+         above, and moved the DB entities/enums (User, PermissionKind) into the
+         Jellyfin.Database.Implementations.* namespaces. The 10.10.x build lives
+         on the main branch. -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.10" />
+    <PackageReference Include="Jellyfin.Model" Version="10.11.10" />
   </ItemGroup>
 
   <ItemGroup>
