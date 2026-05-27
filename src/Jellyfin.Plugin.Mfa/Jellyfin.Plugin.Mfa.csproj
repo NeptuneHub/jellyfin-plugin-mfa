@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <RootNamespace>Jellyfin.Plugin.Mfa</RootNamespace>
     <AssemblyName>Jellyfin.Plugin.Mfa</AssemblyName>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
@@ -37,12 +37,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Pinned to 10.10.6 (the latest 10.10.x on NuGet). The plugin targets
-         ABI 10.10.0.0 (see meta.json) and loads on any Jellyfin 10.10.x server,
-         including 10.10.7. Bumping is a deliberate change that requires
-         re-verifying the plugin compiles and behaves against the new ABI. -->
-    <PackageReference Include="Jellyfin.Controller" Version="10.10.6" />
-    <PackageReference Include="Jellyfin.Model" Version="10.10.6" />
+    <!-- 10.11 branch. Pinned to 10.11.8 (the version the upstream
+         ZL154/JellyfinSecurity fork is proven against). The plugin targets
+         ABI 10.11.0.0 (see meta.json) and loads on any Jellyfin 10.11.x server.
+         Jellyfin 10.11.x runs on .NET 9, hence the net9.0 TargetFramework above.
+         The 10.10.x build lives on the main branch. -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.8" />
+    <PackageReference Include="Jellyfin.Model" Version="10.11.8" />
   </ItemGroup>
 
   <ItemGroup>

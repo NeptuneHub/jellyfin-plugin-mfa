@@ -6,11 +6,19 @@ name: Build Plugin
 #   2. auto-generates the changelog from commit subjects since the last tag;
 #   3. bumps src/.../*.csproj (<Version>/<AssemblyVersion>/<FileVersion>) and
 #      src/.../meta.json;
-#   4. builds + zips the plugin (with md5 + sha256 checksum files);
-#   5. updates manifest.json with a new version entry (changelog, sourceUrl,
-#      md5 checksum, timestamp);
-#   6. commits the bump back to the triggering branch;
-#   7. publishes the GitHub Release with the changelog and uploads the assets.
+#   4. builds (net9 / Jellyfin 10.11.8) + zips the plugin as
+#      Jellyfin.Plugin.Mfa-jf10.11-v*.zip (with md5 + sha256 checksum files);
+#   5. writes its targetAbi 10.11.0.0 entry into the SHARED manifest.json on the
+#      main branch (kept alongside main's 10.10.0.0 entries — one subscription
+#      URL serves both Jellyfin versions);
+#   6. commits the csproj/meta.json bump back to this (10.11) branch;
+#   7. publishes a GitHub Release on the distinct v<ver>-jf10.11 tag.
+#
+# This is the 10.11 branch. The main branch produces the 10.10 build. Release a
+# given version on main first, then the same version here, so the 10.11 entry is
+# listed first for that version (a 10.11 server then prefers it; the ABI filter
+# always keeps the net9 build off 10.10 servers). For order-independence, give
+# main's release.yml the same ABI-aware manifest dedup used in step 5.
 
 on:
   workflow_dispatch:
@@ -48,10 +56,16 @@ jobs:
             exit 1
           fi
           FULL="${RAW}.0"   # Jellyfin assembly/zip version is 4-part
-          TAG="v${RAW}"
+          # Distinct tag + zip base so this 10.11 build never collides with the
+          # main branch's v${RAW} tag / Jellyfin.Plugin.Mfav* asset for the same
+          # version. The manifest 'version' field stays ${FULL} (matches main);
+          # only the ABI distinguishes the two entries.
+          TAG="v${RAW}-jf10.11"
+          ZIPBASE="Jellyfin.Plugin.Mfa-jf10.11-v${FULL}"
           echo "full=$FULL" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Releasing $TAG (assembly version $FULL)"
+          echo "zipbase=$ZIPBASE" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG (assembly version $FULL, ABI 10.11.0.0)"
 
       - name: Generate release notes
         id: notes
@@ -102,54 +116,79 @@ jobs:
             -w /src \
             -e HOME=/tmp \
             -e DOTNET_CLI_HOME=/tmp \
-            mcr.microsoft.com/dotnet/sdk:8.0 \
+            mcr.microsoft.com/dotnet/sdk:9.0 \
             bash -lc "chmod +x ./build.sh && ./build.sh"
 
       - name: Zip package
         id: zip
         run: |
-          FULL="${{ steps.ver.outputs.full }}"
+          ZIPBASE="${{ steps.ver.outputs.zipbase }}"
           cd dist
-          ZIP="Jellyfin.Plugin.Mfav${FULL}.zip"
+          ZIP="${ZIPBASE}.zip"
           zip -r "$ZIP" "Jellyfin.Plugin.Mfa"
           MD5="$(md5sum "$ZIP" | awk '{print toupper($1)}')"
-          echo "$MD5" > "Jellyfin.Plugin.Mfav${FULL}.md5"
-          sha256sum "$ZIP" > "Jellyfin.Plugin.Mfav${FULL}.sha256"
+          echo "$MD5" > "${ZIPBASE}.md5"
+          sha256sum "$ZIP" > "${ZIPBASE}.sha256"
           echo "md5=$MD5" >> "$GITHUB_OUTPUT"
           echo "Built $ZIP (MD5 $MD5)"
 
-      - name: Update manifest.json
+      # The public manifest lives on the main branch and carries BOTH ABIs
+      # (10.10.0.0 + 10.11.0.0), so users keep a single subscription URL and
+      # Jellyfin auto-picks the build matching their server. This 10.11 release
+      # therefore writes its entry into main's manifest.json (not this branch's),
+      # editing it in an isolated worktree so this branch's tree is untouched.
+      - name: Update shared manifest.json on main
         run: |
           FULL="${{ steps.ver.outputs.full }}"
           TAG="${{ steps.ver.outputs.tag }}"
+          ZIPBASE="${{ steps.ver.outputs.zipbase }}"
           MD5="${{ steps.zip.outputs.md5 }}"
-          ABI="$(jq -r '.TargetAbi' src/Jellyfin.Plugin.Mfa/meta.json)"
-          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/Jellyfin.Plugin.Mfav${FULL}.zip"
+          ABI="$(jq -r '.TargetAbi' src/Jellyfin.Plugin.Mfa/meta.json)"   # 10.11.0.0
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${ZIPBASE}.zip"
           TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           NOTES="$(cat '${{ steps.notes.outputs.file }}')"
 
-          # Prepend (newest-first) a version entry, replacing any existing entry
-          # for the same version so a re-run is idempotent.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git worktree add /tmp/main-wt origin/main
+
+          # Prepend this 10.11 entry, replacing only a prior entry of the SAME
+          # version AND SAME ABI — main's 10.10.0.0 entry for this version is
+          # preserved. Listing the 10.11.0.0 entry first makes a 10.11 server
+          # prefer it (ties among equal versions resolve to list order); the ABI
+          # filter keeps it off 10.10 servers regardless of order.
           jq \
             --arg ver "$FULL" --arg log "$NOTES" --arg abi "$ABI" \
             --arg url "$URL" --arg sum "$MD5" --arg ts "$TS" '
             .[0].versions |= (
               [{version:$ver, changelog:$log, targetAbi:$abi, sourceUrl:$url, checksum:$sum, timestamp:$ts}]
-              + (map(select(.version != $ver)))
-            )' manifest.json > manifest.tmp && mv manifest.tmp manifest.json
+              + (map(select(.version != $ver or .targetAbi != $abi)))
+            )' /tmp/main-wt/manifest.json > /tmp/main-wt/manifest.tmp \
+            && mv /tmp/main-wt/manifest.tmp /tmp/main-wt/manifest.json
 
-          echo "----- manifest.json -----"
-          cat manifest.json
+          echo "----- manifest.json (main) -----"
+          cat /tmp/main-wt/manifest.json
+
+          git -C /tmp/main-wt add manifest.json
+          if git -C /tmp/main-wt diff --cached --quiet; then
+            echo "No manifest changes to commit."
+          else
+            git -C /tmp/main-wt commit -m "release: add 10.11 build ${FULL} to manifest"
+            git -C /tmp/main-wt push origin HEAD:main
+          fi
+          git worktree remove /tmp/main-wt --force
 
       - name: Commit version bump
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # manifest.json is intentionally NOT committed here — the shared
+          # manifest is updated on main in the previous step.
           git add \
             src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj \
-            src/Jellyfin.Plugin.Mfa/meta.json \
-            manifest.json
+            src/Jellyfin.Plugin.Mfa/meta.json
           if git diff --cached --quiet; then
             echo "No version changes to commit."
           else
@@ -162,20 +201,20 @@ jobs:
         with:
           name: jellyfin-mfa-package
           path: |
-            dist/Jellyfin.Plugin.Mfav*.zip
-            dist/Jellyfin.Plugin.Mfav*.md5
-            dist/Jellyfin.Plugin.Mfav*.sha256
+            dist/Jellyfin.Plugin.Mfa-jf10.11-v*.zip
+            dist/Jellyfin.Plugin.Mfa-jf10.11-v*.md5
+            dist/Jellyfin.Plugin.Mfa-jf10.11-v*.sha256
 
       - name: Create or update release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          FULL="${{ steps.ver.outputs.full }}"
           TAG="${{ steps.ver.outputs.tag }}"
+          ZIPBASE="${{ steps.ver.outputs.zipbase }}"
           SHA="$(git rev-parse HEAD)"
-          ZIP="dist/Jellyfin.Plugin.Mfav${FULL}.zip"
-          MD5="dist/Jellyfin.Plugin.Mfav${FULL}.md5"
-          SHA256="dist/Jellyfin.Plugin.Mfav${FULL}.sha256"
+          ZIP="dist/${ZIPBASE}.zip"
+          MD5="dist/${ZIPBASE}.md5"
+          SHA256="dist/${ZIPBASE}.sha256"
           NOTES_FILE="${{ steps.notes.outputs.file }}"
 
           # Tag is created at the bump commit we just pushed (--target $SHA).

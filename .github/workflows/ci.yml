@@ -1,14 +1,14 @@
 name: CI
 
-# Runs on every PR to main and every push to main (plus manual). Restores,
-# builds Release, and runs the full test suite. .NET 8 to match the runtime
-# Jellyfin 10.10.x (incl. 10.10.7) ships on.
+# Runs on every PR/push to main or the 10.11 branch (plus manual). Restores,
+# builds Release, and runs the full test suite. .NET 9 to match the runtime
+# Jellyfin 10.11.x ships on (this is the 10.11 branch; main stays on .NET 8).
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "10.11"]
   push:
-    branches: [main]
+    branches: [main, "10.11"]
   workflow_dispatch:
 
 permissions:
@@ -27,10 +27,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Setup .NET 8
+      - name: Setup .NET 9
         uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "9.0.x"
 
       - name: Cache NuGet packages
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -40,8 +40,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
+      # No --locked-mode: the old net8 / Jellyfin 10.10.6 packages.lock.json was
+      # removed for this 10.11 branch and RestorePackagesWithLockFile regenerates
+      # it here for the net9 / 10.11.8 graph. Re-enable --locked-mode once a
+      # maintainer with the .NET 9 SDK commits a refreshed lock file.
       - name: Restore
-        run: dotnet restore Jellyfin.Plugin.Mfa.sln --locked-mode
+        run: dotnet restore Jellyfin.Plugin.Mfa.sln
 
       - name: Build
         run: dotnet build Jellyfin.Plugin.Mfa.sln --configuration Release --no-restore
