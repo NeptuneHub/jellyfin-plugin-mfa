@@ -2,7 +2,7 @@
   "Name": "Multi-Factor Authentication (MFA)",
   "Description": "Per-user multi-factor authentication for Jellyfin: TOTP authenticator enrollment with single-use recovery codes, enforced at sign-in for enrolled users.",
   "Guid": "fab665d5-38e6-4db1-b5fc-0640510fd02d",
-  "Version": "1.0.4.0",
+  "Version": "1.0.4.1",
   "TargetAbi": "10.11.0.0",
   "Owner": "NeptuneHub",
   "Overview": "Per-user TOTP multi-factor authentication with recovery codes for Jellyfin.",
