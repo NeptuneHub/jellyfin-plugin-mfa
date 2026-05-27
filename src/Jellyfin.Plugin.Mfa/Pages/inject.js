@@ -2,7 +2,7 @@
     if (window.__twofactor_injected) return;
     window.__twofactor_injected = true;
 
-    console.log('[2FA] inject.js v3.1.0 loaded');
+    console.log('[2FA] inject.js v3.2.1 loaded');
 
     // ============================================================
     // 1a. TFA-pending sessionStorage flag + client-side short-circuit.
@@ -91,6 +91,46 @@
             || u.indexOf('/users/authenticatewithquickconnect') >= 0
             || /\/users\/[0-9a-f-]+\/authenticate(\?|$)/i.test(u);
     }
+    // Read the access token Jellyfin Web stashed in localStorage so we can both
+    // detect a logged-in shell and probe whether its token is still alive.
+    function getStoredAccessToken() {
+        try {
+            var raw = localStorage.getItem('jellyfin_credentials');
+            if (!raw) return null;
+            var creds = JSON.parse(raw);
+            var servers = creds && creds.Servers;
+            if (servers && servers.length) {
+                for (var i = 0; i < servers.length; i++) {
+                    if (servers[i] && servers[i].AccessToken) return servers[i].AccessToken;
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+    // Kill the stale client-side session. The server has already ended the
+    // session (its token is blocked), but Jellyfin Web still holds that dead
+    // token in localStorage and keeps rendering a logged-in — but link-less —
+    // shell while every API call 403s. Wiping the stored token forces the SPA
+    // back to a logged-out state so it can't keep using the dead token.
+    function killJellyfinSession() {
+        try {
+            var raw = localStorage.getItem('jellyfin_credentials');
+            if (!raw) return;
+            try {
+                var creds = JSON.parse(raw);
+                if (creds && creds.Servers) {
+                    creds.Servers.forEach(function (s) {
+                        if (s) { s.AccessToken = null; s.UserId = null; }
+                    });
+                    localStorage.setItem('jellyfin_credentials', JSON.stringify(creds));
+                } else {
+                    localStorage.removeItem('jellyfin_credentials');
+                }
+            } catch (e) {
+                localStorage.removeItem('jellyfin_credentials');
+            }
+        } catch (e) {}
+    }
     function handleTwoFactorBody(body) {
         if (!body || typeof body !== 'object') return false;
         if (!body.TwoFactorRequired && !body.twoFactorRequired) return false;
@@ -98,15 +138,22 @@
         window.__tfa_redirecting = true;
         // Hardcode the redirect path — never trust a server-supplied URL. The
         // challenge token is the only variable part. A challenge token is only
-        // present for the enrollment case (/Authenticate). The token-block
-        // failsafe (RequestBlockerMiddleware 403) carries no token, so route
-        // those to /Login where the user re-enters username + password + code.
+        // present for the enrollment case (/Authenticate).
         var token = body.ChallengeToken || body.challengeToken || '';
-        var url = token
-            ? '/Mfa/Challenge?token=' + encodeURIComponent(token)
-            : '/Mfa/Login';
+        var url;
+        if (token) {
+            url = '/Mfa/Challenge?token=' + encodeURIComponent(token);
+        } else {
+            // Token-block failsafe (RequestBlockerMiddleware 403) carries no
+            // token: the session is dead. Clear the stale client session so the
+            // user isn't stranded on a broken shell, then send them to /Login to
+            // re-enter username + password + code.
+            killJellyfinSession();
+            url = '/Mfa/Login';
+        }
         console.log('[2FA] Two-factor required — redirecting to ' + url);
-        window.location.href = url;
+        // replace() so the broken/blocked page doesn't linger in history.
+        window.location.replace(url);
         return true;
     }
     // Ensure every auth request carries a STABLE DeviceId so the session the
@@ -452,33 +499,46 @@
                 // Don't double-inject within the same container.
                 if (container.querySelector('[data-mfa-link="1"]')) return;
 
-                var item = document.createElement('a');
+                // Deep-clone the real menu anchor so our entry inherits the
+                // EXACT markup, classes and (class-based) hover styling of its
+                // siblings — building markup by hand left it smaller, misaligned
+                // and without the hover highlight.
+                var item = anchor.cloneNode(true);
                 item.setAttribute('data-mfa-link', '1');
                 item.id = MENU_ITEM_ID + '_' + added;
-                item.className = anchor.className;
-                // No href — a click handler does a hard navigation so the SPA
-                // router can't rewrite /Mfa/Setup into a 404 hash route.
+                // Drop the cloned href + any router data so Jellyfin's SPA can't
+                // hijack the click into a 404 hash route; navigate hard instead.
+                item.removeAttribute('href');
+                item.removeAttribute('data-href');
                 item.style.cursor = 'pointer';
                 item.addEventListener('click', function (e) {
                     e.preventDefault();
                     window.location.assign(SETUP_URL);
                 });
 
-                // Mirror the anchor's inner structure so themes style it
-                // consistently. Swap the label text and (if present) the icon.
-                var innerHtml = anchor.innerHTML;
-                var labelReplaced = false;
-                var withTextSpan = innerHtml.replace(
-                    /(<span[^>]*(?:text|label|name)[^>]*>)([^<]+)(<\/span>)/i,
-                    function (_, open, _label, close) { labelReplaced = true; return open + 'Two-Factor Auth' + close; }
-                );
-                if (labelReplaced) {
-                    item.innerHTML = withTextSpan.replace(
-                        /(<span[^>]*material-icons[^>]*>)([^<]*)(<\/span>)/i,
-                        '$1security$3'
-                    );
+                // Keep the cloned item's own icon exactly as-is. Don't rewrite its
+                // glyph: many Jellyfin icons get their glyph from a CSS class on the
+                // span, so setting textContent renders a SECOND ligature glyph that
+                // overlaps the label. We only need `icon` below to skip its text
+                // node when relabelling.
+                var icon = item.querySelector('.material-icons');
+
+                // Swap the label: prefer a known text container, else replace the
+                // longest text node that isn't the icon glyph.
+                var labelEl = item.querySelector(
+                    '.navMenuOptionText, .listItemBodyText, .actionSheetMenuItemText, .button-text');
+                if (labelEl) {
+                    labelEl.textContent = 'Two-Factor Auth';
                 } else {
-                    item.innerHTML = '<span class="material-icons" aria-hidden="true" style="margin-right:0.5em;">security</span>Two-Factor Auth';
+                    var walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT, null);
+                    var best = null, bestLen = -1, n;
+                    while ((n = walker.nextNode())) {
+                        if (icon && icon.contains(n)) continue;
+                        var t = (n.nodeValue || '').trim();
+                        if (t.length > bestLen) { best = n; bestLen = t.length; }
+                    }
+                    if (best) { best.nodeValue = 'Two-Factor Auth'; }
+                    else { item.appendChild(document.createTextNode('Two-Factor Auth')); }
                 }
 
                 if (anchor.nextSibling) container.insertBefore(item, anchor.nextSibling);
@@ -557,7 +617,34 @@
         addUserMenuLink();
     }
 
+    // Self-heal a stranded session. If this tab loaded into a logged-in shell
+    // whose token is blocked (an old password-only session, or the SPA fired its
+    // post-load API burst before this script installed its fetch/XHR hooks), the
+    // user can end up on a link-less page where every call 403s and there's no
+    // way out. Probe one authenticated endpoint on load; if it reports
+    // twoFactorRequired, handleTwoFactorBody() kills the dead session and bounces
+    // to /Mfa/Login. Only runs when a stored token exists (i.e. apparently
+    // logged in); healthy sessions get a 200 and nothing happens.
+    function selfHealIfBlocked() {
+        var token = getStoredAccessToken();
+        if (!token) return;
+        try {
+            (origFetch || window.fetch)('/Users/Me', {
+                headers: { 'X-Emby-Token': token },
+                cache: 'no-store'
+            }).then(function (resp) {
+                if (!resp || (resp.status !== 401 && resp.status !== 403)) return;
+                return resp.clone().json().then(function (body) {
+                    if (body && (body.twoFactorRequired || body.TwoFactorRequired)) {
+                        handleTwoFactorBody(body);
+                    }
+                }).catch(function () {});
+            }).catch(function () {});
+        } catch (e) {}
+    }
+
     function start() {
+        selfHealIfBlocked();
         tryInject();
 
         var attempts = 0;

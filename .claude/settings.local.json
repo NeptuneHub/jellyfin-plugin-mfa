@@ -22,7 +22,9 @@
       "PowerShell($dotnet = \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\"; & $dotnet test \"C:\\\\Users\\\\gcola\\\\Music\\\\jellyfin-plugin-mfa\\\\tests\\\\Jellyfin.Plugin.Mfa.Tests\\\\Jellyfin.Plugin.Mfa.Tests.csproj\" -c Release 2>&1 | Select-Object -Last 12)",
       "PowerShell($dotnet = \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\"; & $dotnet build \"Jellyfin.Plugin.Mfa.csproj\" -c Release 2>&1 | Select-Object -Last 6)",
       "Bash(powershell.exe -NoProfile -Command \"[guid]::NewGuid\\(\\).ToString\\(\\)\")",
-      "Bash(echo \"NEW_GUID=$\\(powershell.exe -NoProfile -Command \"[guid]::NewGuid\\(\\).ToString\\(\\)\")"
+      "Bash(echo \"NEW_GUID=$\\(powershell.exe -NoProfile -Command \"[guid]::NewGuid\\(\\).ToString\\(\\)\")",
+      "Bash(command -v node)",
+      "Bash(node --check src/Jellyfin.Plugin.Mfa/Pages/inject.js)"
     ],
     "additionalDirectories": [
       "C:\\Users\\gcola\\.claude\\plans"
