@@ -14,11 +14,12 @@ name: Build Plugin
 #   6. commits the csproj/meta.json bump back to this (10.11) branch;
 #   7. publishes a GitHub Release on the distinct v<ver>-jf10.11 tag.
 #
-# This is the 10.11 branch. The main branch produces the 10.10 build. Release a
-# given version on main first, then the same version here, so the 10.11 entry is
-# listed first for that version (a 10.11 server then prefers it; the ABI filter
-# always keeps the net9 build off 10.10 servers). For order-independence, give
-# main's release.yml the same ABI-aware manifest dedup used in step 5.
+# This is the 10.11 branch. The main branch produces the 10.10 build. For a given
+# release X.Y.Z, main publishes version X.Y.Z.0 (ABI 10.10.0.0) and this branch
+# publishes X.Y.Z.1 (ABI 10.11.0.0) into the same manifest. The distinct revision
+# means a 10.11 server prefers the .1 build by version comparison while a 10.10
+# server filters it out by ABI — the order in which you release the two, and any
+# re-release on main, no longer affect which build each server gets.
 
 on:
   workflow_dispatch:
@@ -55,11 +56,15 @@ jobs:
             echo "::error::Version must look like v1.2.3 (got '${VERSION_INPUT}')."
             exit 1
           fi
-          FULL="${RAW}.0"   # Jellyfin assembly/zip version is 4-part
-          # Distinct tag + zip base so this 10.11 build never collides with the
-          # main branch's v${RAW} tag / Jellyfin.Plugin.Mfav* asset for the same
-          # version. The manifest 'version' field stays ${FULL} (matches main);
-          # only the ABI distinguishes the two entries.
+          # The 10.11 build uses revision .1 (the matching 10.10 build on main
+          # uses .0), so the two are DISTINCT versions: e.g. 10.11 -> 1.2.3.1,
+          # 10.10 -> 1.2.3.0. A 10.11 server then prefers the .1 build by version
+          # comparison (no reliance on manifest order), a 10.10 server filters the
+          # .1 entry out by ABI, and main's version-keyed manifest dedup can never
+          # clobber the .1 entry.
+          FULL="${RAW}.1"   # 4-part assembly/zip version; .1 = the 10.11 variant
+          # Distinct tag + zip base so this build never collides with main's
+          # v${RAW} tag / Jellyfin.Plugin.Mfav* asset.
           TAG="v${RAW}-jf10.11"
           ZIPBASE="Jellyfin.Plugin.Mfa-jf10.11-v${FULL}"
           echo "full=$FULL" >> "$GITHUB_OUTPUT"
@@ -153,11 +158,11 @@ jobs:
           git fetch origin main
           git worktree add /tmp/main-wt origin/main
 
-          # Prepend this 10.11 entry, replacing only a prior entry of the SAME
-          # version AND SAME ABI — main's 10.10.0.0 entry for this version is
-          # preserved. Listing the 10.11.0.0 entry first makes a 10.11 server
-          # prefer it (ties among equal versions resolve to list order); the ABI
-          # filter keeps it off 10.10 servers regardless of order.
+          # Prepend this 10.11 entry (version X.Y.Z.1, ABI 10.11.0.0), replacing
+          # only a prior entry with the same version+ABI so re-runs are idempotent.
+          # main's X.Y.Z.0 / 10.10.0.0 entry is a DIFFERENT version, so it is left
+          # untouched. A 10.11 server picks the higher .1 version by comparison; a
+          # 10.10 server filters the .1 entry out by ABI.
           jq \
             --arg ver "$FULL" --arg log "$NOTES" --arg abi "$ABI" \
             --arg url "$URL" --arg sum "$MD5" --arg ts "$TS" '
