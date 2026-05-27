@@ -10,7 +10,7 @@ body:
         detail you provide upfront, the faster this can get fixed.
 
         **Security bugs**: do NOT file them here. Use the channels in
-        [SECURITY.md](https://github.com/ZL154/JellyfinSecurity/blob/main/SECURITY.md) instead.
+        [SECURITY.md](https://github.com/NeptuneHub/jellyfin-plugin-mfa/blob/main/SECURITY.md) instead.
 
   - type: checkboxes
     id: pre-flight
@@ -21,7 +21,7 @@ body:
           required: true
         - label: I'm running the **latest** plugin version, or have a reason I can't be (described below).
           required: true
-        - label: My Jellyfin server is on **10.11.0 or newer** (the plugin does not support 10.10.x).
+        - label: My Jellyfin server is on **10.10.x** (the ABI this plugin targets, e.g. 10.10.7).
           required: true
         - label: This is NOT a security vulnerability (those go through SECURITY.md).
           required: true
@@ -30,8 +30,8 @@ body:
     id: jellyfin-version
     attributes:
       label: Jellyfin server version
-      description: Find it under **Dashboard → About**. Include the full build (e.g. `10.11.8`).
-      placeholder: "e.g. 10.11.8"
+      description: Find it under **Dashboard → About**. Include the full build (e.g. `10.10.7`).
+      placeholder: "e.g. 10.10.7"
     validations:
       required: true
 
@@ -39,8 +39,8 @@ body:
     id: plugin-version
     attributes:
       label: Plugin version
-      description: Find it under **Dashboard → Plugins → Jellyfin Security**.
-      placeholder: "e.g. 2.3.0"
+      description: Find it under **Dashboard → Plugins → Multi-Factor Authentication (MFA)**.
+      placeholder: "e.g. 1.0.0"
     validations:
       required: true
 
@@ -106,7 +106,6 @@ body:
         - Samsung Tizen / LG webOS Smart TV
         - Swiftfin
         - Findroid / Streamyfin
-        - Sonarr / Radarr / Lidarr (service integration)
         - Other / unsure
     validations:
       required: true
@@ -152,8 +151,8 @@ body:
     attributes:
       label: Relevant plugin settings (optional)
       description: |
-        e.g. "LAN bypass enabled, TrustForwardedFor on, OIDC configured with Authentik". DO NOT
-        paste secrets (client_secret, HMAC keys, recovery codes).
+        e.g. "EnforcementScope = Admins, BlockNativeLoginForEnforcedUsers on". DO NOT paste
+        secrets (recovery codes, TOTP secret / QR key).
 
   - type: textarea
     id: extra

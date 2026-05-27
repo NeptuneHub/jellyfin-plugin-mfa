@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -146,6 +148,101 @@ public class UserTwoFactorStore : IDisposable
         {
             sem.Release();
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Verified sessions (persistent 2FA pass-through so devices survive restarts)
+    // -------------------------------------------------------------------------
+
+    // A trusted session whose expiry is within this many days of now is refreshed
+    // on use, giving the sliding-window behaviour without writing on every check.
+    private const int RefreshThresholdDays = 7;
+
+    // Defensive cap on stored verified sessions per user.
+    private const int MaxVerifiedSessions = 100;
+
+    /// <summary>SHA-256 hash of an access token, base64. Storing only the hash
+    /// means a leaked users/{id}.json exposes no usable credential.</summary>
+    public static string HashToken(string token)
+        => Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(token)));
+
+    /// <summary>True if <paramref name="token"/> has a non-expired verified-session
+    /// record for this user. The record is bound to the device id when one was
+    /// stored, so a token replayed from a different device is rejected.
+    /// <paramref name="refreshSoon"/> is set when the entry is close enough to
+    /// expiry that the caller should slide it forward via
+    /// <see cref="MarkSessionVerifiedAsync"/>.</summary>
+    public static bool IsSessionVerified(
+        UserTwoFactorData userData, string? token, string? deviceId, DateTime utcNow, out bool refreshSoon)
+    {
+        refreshSoon = false;
+        if (userData is null || string.IsNullOrEmpty(token)) return false;
+
+        var hashBytes = Encoding.UTF8.GetBytes(HashToken(token));
+        foreach (var s in userData.VerifiedSessions)
+        {
+            if (s.ExpiresAt <= utcNow) continue;
+            if (!CryptographicOperations.FixedTimeEquals(
+                    Encoding.UTF8.GetBytes(s.TokenHash), hashBytes))
+            {
+                continue;
+            }
+
+            // Device binding: only enforced when both sides carry a device id.
+            if (!string.IsNullOrEmpty(s.DeviceId) && !string.IsNullOrEmpty(deviceId)
+                && !string.Equals(s.DeviceId, deviceId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            refreshSoon = s.ExpiresAt < utcNow.AddDays(RefreshThresholdDays);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Record (or slide forward) that <paramref name="token"/> has cleared
+    /// 2FA for this user, so the SessionStarted failsafe lets it back in after a
+    /// restart without re-prompting. TTL is <c>TrustedSessionDays</c> (sliding).</summary>
+    public async Task MarkSessionVerifiedAsync(Guid userId, string token, string? deviceId, string? deviceName)
+    {
+        if (userId == Guid.Empty || string.IsNullOrEmpty(token)) return;
+
+        var hash = HashToken(token);
+        var days = Math.Clamp(Plugin.Instance?.Configuration?.TrustedSessionDays ?? 30, 1, 365);
+        var now = DateTime.UtcNow;
+
+        await MutateAsync(userId, ud =>
+        {
+            ud.VerifiedSessions.RemoveAll(s => s.ExpiresAt <= now);
+
+            var existing = ud.VerifiedSessions.FirstOrDefault(
+                s => string.Equals(s.TokenHash, hash, StringComparison.Ordinal));
+            if (existing is not null)
+            {
+                existing.ExpiresAt = now.AddDays(days);
+                if (!string.IsNullOrEmpty(deviceId)) existing.DeviceId = deviceId;
+                if (!string.IsNullOrEmpty(deviceName)) existing.DeviceName = deviceName;
+            }
+            else
+            {
+                ud.VerifiedSessions.Add(new VerifiedSession
+                {
+                    TokenHash = hash,
+                    DeviceId = deviceId,
+                    DeviceName = deviceName,
+                    VerifiedAt = now,
+                    ExpiresAt = now.AddDays(days),
+                });
+            }
+
+            if (ud.VerifiedSessions.Count > MaxVerifiedSessions)
+            {
+                ud.VerifiedSessions.Sort((a, b) => a.ExpiresAt.CompareTo(b.ExpiresAt));
+                ud.VerifiedSessions.RemoveRange(0, ud.VerifiedSessions.Count - MaxVerifiedSessions);
+            }
+        }).ConfigureAwait(false);
     }
 
     public async Task<bool> IsLockedOutAsync(Guid userId)

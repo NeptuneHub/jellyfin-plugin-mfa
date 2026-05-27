@@ -29,7 +29,7 @@
 - [ ] Tested manually against a running Jellyfin server (state version)
 - [ ] N/A — explain why below
 
-Server tested against: <!-- e.g. Jellyfin 10.11.8 in Docker -->
+Server tested against: <!-- e.g. Jellyfin 10.10.7 in Docker -->
 Clients tested with: <!-- e.g. Web + Android + Swiftfin -->
 
 ## Checklist

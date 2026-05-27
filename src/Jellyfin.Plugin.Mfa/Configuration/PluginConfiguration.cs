@@ -80,4 +80,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// have 2FA (by <see cref="EnforcementScope"/>) but hasn't enrolled is still
     /// forced through enrollment.</summary>
     public bool AllowQuickConnectForEnrolledUsers { get; set; }
+
+    /// <summary>How long (days) a device that has completed 2FA stays trusted, so a
+    /// Jellyfin restart doesn't force every device to re-authenticate. The window
+    /// SLIDES: it's refreshed each time the device is used, so a regularly-used
+    /// device never re-prompts, while one left idle past this window re-does 2FA
+    /// once. Trust is stored as a hash of the access token bound to the device,
+    /// and is wiped on 2FA disable/reset. Clamped to 1–365; default 30.</summary>
+    public int TrustedSessionDays { get; set; } = 30;
 }

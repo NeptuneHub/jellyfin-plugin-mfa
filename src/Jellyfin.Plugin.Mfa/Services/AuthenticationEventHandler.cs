@@ -121,11 +121,33 @@ public class AuthenticationEventHandler : IHostedService
             return;
         }
 
+        // Persistent 2FA pass-through: a token that already cleared 2FA — this
+        // process OR a previous one, via the on-disk record — is allowed without
+        // re-prompting. This is what lets a TV/phone survive a Jellyfin restart.
+        // Slide the expiry forward when it nears the window so an actively-used
+        // device never lapses.
+        if (!string.IsNullOrEmpty(token)
+            && UserTwoFactorStore.IsSessionVerified(userData, token, info.DeviceId, DateTime.UtcNow, out var refreshSoon))
+        {
+            if (refreshSoon)
+            {
+                await _store.MarkSessionVerifiedAsync(info.UserId, token, info.DeviceId, info.DeviceName).ConfigureAwait(false);
+            }
+
+            return;
+        }
+
         // Reconnect / follow-up session within the pre-verify window, or a token
-        // that already completed 2FA this process lifetime → allow (issue #27).
+        // that completed 2FA this process lifetime → allow (issue #27). Promote it
+        // to the persistent record so the NEXT restart doesn't re-prompt this device.
         if (_challengeStore.IsDevicePreVerified(info.UserId, info.DeviceId)
             || (!string.IsNullOrEmpty(token) && _challengeStore.IsTokenVerified(token)))
         {
+            if (!string.IsNullOrEmpty(token))
+            {
+                await _store.MarkSessionVerifiedAsync(info.UserId, token, info.DeviceId, info.DeviceName).ConfigureAwait(false);
+            }
+
             return;
         }
 
@@ -145,6 +167,7 @@ public class AuthenticationEventHandler : IHostedService
             if (!string.IsNullOrEmpty(token))
             {
                 _challengeStore.MarkTokenVerified(token);
+                await _store.MarkSessionVerifiedAsync(info.UserId, token, info.DeviceId, info.DeviceName).ConfigureAwait(false);
             }
 
             _challengeStore.MarkDevicePreVerified(info.UserId, info.DeviceId);

@@ -50,20 +50,13 @@ body:
       multiple: true
       options:
         - TOTP / authenticator apps
-        - Email OTP
-        - Passkeys / WebAuthn
-        - OIDC / SSO
-        - Brute-force IP banning
-        - Impossible-travel detection
-        - Per-user IP allowlist
-        - App passwords
-        - Device pairing
-        - Trusted browser cookies
+        - Recovery codes
+        - Enforcement policy (Optional / Admins / All)
+        - Sign-in / challenge flow
+        - Enrollment flow
         - Audit log
         - Admin UI
         - User Setup UI
-        - Notifications / webhooks
-        - API / integrations
         - Documentation
         - Other
     validations:

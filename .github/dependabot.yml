@@ -14,15 +14,6 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
-    groups:
-      microsoft-identitymodel:
-        patterns:
-          - "Microsoft.IdentityModel.*"
-          - "System.IdentityModel.*"
-          - "IdentityModel.*"
-      fido2:
-        patterns:
-          - "Fido2*"
     ignore:
       # Floating wildcards on the Jellyfin SDK are intentional — pin/upgrade via csproj.
       - dependency-name: "Jellyfin.Controller"
@@ -41,31 +32,6 @@ updates:
       - "tests"
     commit-message:
       prefix: "deps(tests)"
-
-  - package-ecosystem: "nuget"
-    directory: "/tests/Jellyfin.Plugin.TwoFactorAuth.Fuzz"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "06:00"
-      timezone: "Etc/UTC"
-    open-pull-requests-limit: 3
-    labels:
-      - "dependencies"
-      - "fuzz"
-    commit-message:
-      prefix: "deps(fuzz)"
-
-  - package-ecosystem: "docker"
-    directory: "/.clusterfuzzlite"
-    schedule:
-      interval: "monthly"
-    labels:
-      - "dependencies"
-      - "docker"
-      - "fuzz"
-    commit-message:
-      prefix: "deps(fuzz-docker)"
 
   - package-ecosystem: "github-actions"
     directory: "/"

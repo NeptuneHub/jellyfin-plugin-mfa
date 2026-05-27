@@ -1,9 +1,8 @@
-name: "JellyfinSecurity CodeQL config"
+name: "MFA plugin CodeQL config"
 
-# Run the full security-extended + security-and-quality query packs (already
-# specified in codeql.yml). Filter out a small set of rules that produce
-# high-noise false positives in this codebase — each exclusion has a stated
-# justification below.
+# Runs the security-extended + security-and-quality query packs (specified in
+# codeql.yml). Scans only src/ and filters a small set of rules that produce
+# high-noise false positives in this codebase — each exclusion is justified.
 
 paths:
   - src/
@@ -14,8 +13,8 @@ paths-ignore:
   - "**/*.css"
 
 query-filters:
-  # Style-only rules — surface in editors as inline hints but add noise to
-  # the SARIF dashboard without indicating real defects. The recommended
+  # Style-only rules — surface in editors as inline hints but add noise to the
+  # SARIF dashboard without indicating real defects. The recommended analyzer
   # set already runs via NetAnalyzers, no need to dual-report.
   - exclude:
       id: cs/missed-readonly-modifier
@@ -27,60 +26,34 @@ query-filters:
       id: cs/linq/missed-select
   - exclude:
       id: cs/useless-assignment-to-local
-
-  # cs/catch-of-all-exceptions: intentional in audit-log, webhook,
-  # notification, and background-task handlers — the plugin's design is
-  # "never crash Jellyfin because of us". Catching narrow exception types
-  # would let a NullReferenceException or out-of-disk-space scenario
-  # propagate into Jellyfin's HTTP pipeline. Suppressed globally.
-  - exclude:
-      id: cs/catch-of-all-exceptions
-
-  # cs/path-combine: every flagged callsite combines admin-config-derived
-  # paths (PluginConfigurationsPath) with hardcoded literals — no
-  # user-controlled traversal vector. Suppressed.
-  - exclude:
-      id: cs/path-combine
-
-  # cs/equality-on-floats: every flagged callsite is a default-value
-  # check (`lat == 0 && lon == 0` = "no geo data") — not a comparison
-  # between two computed floats. The conventional float-equality concerns
-  # do not apply.
-  - exclude:
-      id: cs/equality-on-floats
-
-  # cs/web/xss in NotificationService.cs: webhook payloads are sent with
-  # `text/plain` Content-Type to ntfy.sh / Gotify / Discord-shaped JSON.
-  # No HTML rendering surface — flagged because CodeQL doesn't trace
-  # Content-Type. Reviewed and confirmed not exploitable.
-  - exclude:
-      id: cs/web/xss
-
-  # cs/user-controlled-bypass in PairConfirm: the payload going into
-  # `parts = payload.Split('|')` has been HMAC-verified at
-  # `_cookieSigner.Verify(payload, sig)` before this line. CodeQL does
-  # not model the trust boundary the HMAC verification establishes.
-  - exclude:
-      id: cs/user-controlled-bypass
-
-  # cs/log-forging: every flagged callsite logs structured key=value
-  # parameters (userId, deviceId, IP) into a templated message — ASP.NET
-  # Core's ILogger structured logging escapes control characters in the
-  # values automatically. The conventional log-forging vector via raw
-  # string concatenation does not apply here.
-  - exclude:
-      id: cs/log-forging
-
-  # cs/constant-condition: hint-level redundant null check inside a branch
-  # the compiler already proved non-null. Not a defect.
   - exclude:
       id: cs/constant-condition
 
-  # cs/static-field-written-by-instance: every flagged callsite is either
-  # an intentional cache guarded by `lock` (IndexHtmlInjectionMiddleware
-  # _cachedFingerprint + _cachedPatched), an Interlocked counter
-  # (_requestsSeen), or async-flow state (NotificationService
-  # _pinnedAllowedAddresses, now AsyncLocal<T>). All three patterns are
-  # thread-safe by design.
+  # cs/catch-of-all-exceptions: intentional throughout. The plugin's design is
+  # "never crash Jellyfin because of us" — the SessionStarted failsafe, the
+  # request/inject middleware, key-file loading, and the audit/store layers all
+  # catch broadly so a transient fault can't propagate into Jellyfin's HTTP
+  # pipeline or take down auth. Suppressed globally.
+  - exclude:
+      id: cs/catch-of-all-exceptions
+
+  # cs/path-combine: every flagged callsite combines an admin-config-derived
+  # path (PluginConfigurationsPath) with hardcoded literals (TwoFactorAuth,
+  # users/, audit.json, secret.key, audit.key) — no user-controlled traversal
+  # vector. Suppressed.
+  - exclude:
+      id: cs/path-combine
+
+  # cs/log-forging: flagged callsites log structured key=value parameters
+  # (userId, deviceId, IP, username) into templated messages — ASP.NET Core's
+  # ILogger structured logging escapes control characters in the values
+  # automatically. The raw-concatenation log-forging vector does not apply.
+  - exclude:
+      id: cs/log-forging
+
+  # cs/static-field-written-by-instance: the flagged callsites are the
+  # IndexHtmlInjectionMiddleware patched-index cache (_cachedFingerprint +
+  # _cachedPatched, guarded by a lock) and its _requestsSeen Interlocked
+  # counter. Both are thread-safe by design.
   - exclude:
       id: cs/static-field-written-by-instance

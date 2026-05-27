@@ -1038,6 +1038,7 @@ public class TwoFactorAuthController : ControllerBase
             ud.RecoveryCodes.Clear();
             ud.RecoveryCodesGeneratedAt = null;
             ud.LastUsedTotpStep = 0;
+            ud.VerifiedSessions.Clear();
         }).ConfigureAwait(false);
 
         // Revoke the second factor AND any live session, then clear pre-verify.
@@ -1176,6 +1177,7 @@ public class TwoFactorAuthController : ControllerBase
                 ud.LastUsedTotpStep = 0;
                 ud.FailedAttemptCount = 0;
                 ud.LockoutEnd = null;
+                ud.VerifiedSessions.Clear();
             }).ConfigureAwait(false);
             await _sessionTerm.LogoutAllForUserAsync(id).ConfigureAwait(false);
         }

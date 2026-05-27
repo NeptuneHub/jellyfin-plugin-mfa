@@ -96,6 +96,13 @@
                         can always use Quick Connect.</span>
                     </span>
                 </label>
+                <label style="display:block;color:#888;font-size:12px;margin-bottom:6px;">Trusted device duration (days)
+                    <span class="muted" style="display:block;font-size:12px;text-transform:none;">How long a device
+                    stays signed in after completing 2FA before it must verify again, so a server restart doesn't log
+                    out your TV/phone. The window slides — it's refreshed each time the device is used, so a device in
+                    regular use never re-prompts. 1–365, default 30.</span>
+                </label>
+                <input type="number" id="cfgTrustedDays" class="tfa-input" min="1" max="365" style="margin-bottom:18px;width:120px;" />
                 <div>
                     <button is="emby-button" type="button" class="raised button-submit" id="btnSaveSettings"><span>Save</span></button>
                 </div>
@@ -227,6 +234,7 @@
                     // Default to true when the server omits the field (older config blobs).
                     page.querySelector('#cfgBlockNative').checked = cfg.BlockNativeLoginForEnforcedUsers !== false;
                     page.querySelector('#cfgAllowQuickConnect').checked = cfg.AllowQuickConnectForEnrolledUsers === true;
+                    page.querySelector('#cfgTrustedDays').value = cfg.TrustedSessionDays || 30;
                 });
             }
 
@@ -236,6 +244,8 @@
                     cfg.EnforcementScope = page.querySelector('#cfgScope').value;
                     cfg.BlockNativeLoginForEnforcedUsers = page.querySelector('#cfgBlockNative').checked;
                     cfg.AllowQuickConnectForEnrolledUsers = page.querySelector('#cfgAllowQuickConnect').checked;
+                    var td = parseInt(page.querySelector('#cfgTrustedDays').value, 10);
+                    cfg.TrustedSessionDays = (td >= 1 && td <= 365) ? td : 30;
                     return api().updatePluginConfiguration(PLUGIN_ID, cfg);
                 }).then(function () {
                     toast('Settings saved.', true);

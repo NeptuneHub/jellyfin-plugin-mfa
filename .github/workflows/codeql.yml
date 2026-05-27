@@ -8,8 +8,8 @@ on:
   schedule:
     - cron: "23 7 * * 1"
 
-# OSSF Token-Permissions: read-all at top level so any future job that omits
-# its own permissions: block defaults to least privilege.
+# Read-only at top level so any future job that omits its own permissions block
+# defaults to least privilege.
 permissions: read-all
 
 jobs:
@@ -26,10 +26,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Setup .NET 9
+      - name: Setup .NET 8
         uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
         with:
-          dotnet-version: "9.0.x"
+          dotnet-version: "8.0.x"
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4.35.5
@@ -40,8 +40,8 @@ jobs:
 
       - name: Build
         run: |
-          dotnet restore JellyfinSecurity.sln --locked-mode
-          dotnet build JellyfinSecurity.sln --configuration Release --no-restore
+          dotnet restore Jellyfin.Plugin.Mfa.sln --locked-mode
+          dotnet build Jellyfin.Plugin.Mfa.sln --configuration Release --no-restore
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4.35.5

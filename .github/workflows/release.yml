@@ -1,22 +1,27 @@
 name: Build Plugin
 
+# Manual-only release pipeline. The ONLY input is the version. You run it from
+# the Actions tab, type a version (e.g. v1.0.0), and it always:
+#   1. validates the version and derives the 4-part assembly version (1.0.0.0);
+#   2. auto-generates the changelog from commit subjects since the last tag;
+#   3. bumps src/.../*.csproj (<Version>/<AssemblyVersion>/<FileVersion>) and
+#      src/.../meta.json;
+#   4. builds + zips the plugin (with md5 + sha256 checksum files);
+#   5. updates manifest.json with a new version entry (changelog, sourceUrl,
+#      md5 checksum, timestamp);
+#   6. commits the bump back to the triggering branch;
+#   7. publishes the GitHub Release with the changelog and uploads the assets.
+
 on:
   workflow_dispatch:
     inputs:
-      publish_release:
-        description: "Create/update GitHub Release and upload artifacts"
+      version:
+        description: "Release version, e.g. v1.0.0"
         required: true
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
+        type: string
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
-# OSSF Token-Permissions: read-all top-level; the build job opts into the
-# narrower contents: write + id-token: write that it actually needs.
+# Read-only by default; the build job opts into the contents: write it needs
+# to push the bump commit and publish the release.
 permissions: read-all
 
 jobs:
@@ -24,13 +29,72 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
-      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history + tags so the changelog can diff against the last tag.
+          fetch-depth: 0
 
-      - name: Build fat package in Docker
+      - name: Parse and validate version
+        id: ver
+        env:
+          # Via env (not inline ${{ }}) so a crafted input can't inject shell.
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          RAW="${VERSION_INPUT#v}"   # tolerate a leading 'v'
+          if ! printf '%s' "$RAW" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version must look like v1.2.3 (got '${VERSION_INPUT}')."
+            exit 1
+          fi
+          FULL="${RAW}.0"   # Jellyfin assembly/zip version is 4-part
+          TAG="v${RAW}"
+          echo "full=$FULL" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG (assembly version $FULL)"
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          NOTES_FILE="$RUNNER_TEMP/notes.md"
+
+          # Changelog is built automatically from the commit subjects since the
+          # previous tag (all commits if there's no prior tag).
+          PREV_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          {
+            echo "## ${TAG}"
+            echo ""
+            echo "### Changes"
+            if [ -n "$PREV_TAG" ]; then
+              git log --no-merges --pretty='- %s' "${PREV_TAG}..HEAD"
+            else
+              git log --no-merges --pretty='- %s'
+            fi
+          } > "$NOTES_FILE"
+
+          echo "file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+          echo "----- release notes -----"
+          cat "$NOTES_FILE"
+
+      - name: Bump version in csproj + meta.json
+        run: |
+          FULL="${{ steps.ver.outputs.full }}"
+          CSPROJ="src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj"
+          META="src/Jellyfin.Plugin.Mfa/meta.json"
+
+          sed -i -E \
+            -e "s#<Version>[^<]*</Version>#<Version>${FULL}</Version>#" \
+            -e "s#<AssemblyVersion>[^<]*</AssemblyVersion>#<AssemblyVersion>${FULL}</AssemblyVersion>#" \
+            -e "s#<FileVersion>[^<]*</FileVersion>#<FileVersion>${FULL}</FileVersion>#" \
+            "$CSPROJ"
+
+          jq --arg v "$FULL" '.Version=$v' "$META" > "$META.tmp" && mv "$META.tmp" "$META"
+
+          echo "csproj: $(grep -oE '<Version>[^<]*</Version>' "$CSPROJ")"
+          echo "meta.json Version: $(jq -r '.Version' "$META")"
+
+      - name: Build package in Docker
         run: |
           docker run --rm \
             -u "$(id -u):$(id -g)" \
@@ -38,95 +102,86 @@ jobs:
             -w /src \
             -e HOME=/tmp \
             -e DOTNET_CLI_HOME=/tmp \
-            mcr.microsoft.com/dotnet/sdk:9.0@sha256:087fc98e5c6ffcea6c3e276c135c4a6717c589d9509a09cc22e7c634830a4db8 \
-            bash -lc "chmod +x ./build.sh && ./build.sh fat"
+            mcr.microsoft.com/dotnet/sdk:8.0 \
+            bash -lc "chmod +x ./build.sh && ./build.sh"
 
       - name: Zip package
+        id: zip
         run: |
-          VERSION="$(grep -oPm1 '(?<=<Version>)[^<]+' src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj)"
+          FULL="${{ steps.ver.outputs.full }}"
           cd dist
-          zip -r "Jellyfin.Plugin.Mfav${VERSION}.zip" "Jellyfin.Plugin.Mfa"
-          md5sum "Jellyfin.Plugin.Mfav${VERSION}.zip" | awk '{print toupper($1)}' > "Jellyfin.Plugin.Mfav${VERSION}.md5"
-          sha256sum "Jellyfin.Plugin.Mfav${VERSION}.zip" > "Jellyfin.Plugin.Mfav${VERSION}.sha256"
+          ZIP="Jellyfin.Plugin.Mfav${FULL}.zip"
+          zip -r "$ZIP" "Jellyfin.Plugin.Mfa"
+          MD5="$(md5sum "$ZIP" | awk '{print toupper($1)}')"
+          echo "$MD5" > "Jellyfin.Plugin.Mfav${FULL}.md5"
+          sha256sum "$ZIP" > "Jellyfin.Plugin.Mfav${FULL}.sha256"
+          echo "md5=$MD5" >> "$GITHUB_OUTPUT"
+          echo "Built $ZIP (MD5 $MD5)"
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        with:
-          # Pin cosign binary to v2.4.0 — newer v3+ cosign defaults to
-          # --new-bundle-format which silently ignores our --output-signature
-          # and --output-certificate flags, breaking the .sig/.pem assets
-          # Scorecard's Signed-Releases check looks for. v2.4.0 keeps the
-          # legacy flag behavior. Revisit when we're ready to migrate to
-          # cosign bundles + update the gh release upload list.
-          cosign-release: 'v2.4.0'
-
-      - name: Sign release zip
-        if: ${{ github.event.inputs.publish_release == 'true' }}
+      - name: Update manifest.json
         run: |
-          VERSION="$(grep -oPm1 '(?<=<Version>)[^<]+' src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj)"
-          ZIP="dist/Jellyfin.Plugin.Mfav${VERSION}.zip"
-          cosign sign-blob --yes --output-signature "${ZIP}.sig" --output-certificate "${ZIP}.pem" "$ZIP"
+          FULL="${{ steps.ver.outputs.full }}"
+          TAG="${{ steps.ver.outputs.tag }}"
+          MD5="${{ steps.zip.outputs.md5 }}"
+          ABI="$(jq -r '.TargetAbi' src/Jellyfin.Plugin.Mfa/meta.json)"
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/Jellyfin.Plugin.Mfav${FULL}.zip"
+          TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          NOTES="$(cat '${{ steps.notes.outputs.file }}')"
 
-      # SLSA build provenance: GitHub's first-party attestation action signs an
-      # in-toto attestation linking the zip to this exact workflow run + commit
-      # SHA. Lifts OpenSSF Scorecard's Signed-Releases check from partial to
-      # full credit and lets downstream consumers verify origin via
-      # `gh attestation verify --owner ZL154 <zip>`.
-      - name: Attest build provenance
-        id: attest
-        if: ${{ github.event.inputs.publish_release == 'true' }}
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
-        with:
-          subject-path: 'dist/Jellyfin.Plugin.Mfav*.zip'
+          # Prepend (newest-first) a version entry, replacing any existing entry
+          # for the same version so a re-run is idempotent.
+          jq \
+            --arg ver "$FULL" --arg log "$NOTES" --arg abi "$ABI" \
+            --arg url "$URL" --arg sum "$MD5" --arg ts "$TS" '
+            .[0].versions |= (
+              [{version:$ver, changelog:$log, targetAbi:$abi, sourceUrl:$url, checksum:$sum, timestamp:$ts}]
+              + (map(select(.version != $ver)))
+            )' manifest.json > manifest.tmp && mv manifest.tmp manifest.json
 
-      # Scorecard's Signed-Releases check inspects release assets directly —
-      # the attestation registry it can't see. Stage the bundle JSONL next
-      # to the zip so the per-release asset list includes it.
-      - name: Stage attestation as release asset
-        if: ${{ github.event.inputs.publish_release == 'true' }}
+          echo "----- manifest.json -----"
+          cat manifest.json
+
+      - name: Commit version bump
         run: |
-          VERSION="$(grep -oPm1 '(?<=<Version>)[^<]+' src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj)"
-          cp '${{ steps.attest.outputs.bundle-path }}' "dist/Jellyfin.Plugin.Mfav${VERSION}.zip.intoto.jsonl"
+          TAG="${{ steps.ver.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj \
+            src/Jellyfin.Plugin.Mfa/meta.json \
+            manifest.json
+          if git diff --cached --quiet; then
+            echo "No version changes to commit."
+          else
+            git commit -m "release: ${TAG}"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: jellyfin-security-fat-package
+          name: jellyfin-mfa-package
           path: |
             dist/Jellyfin.Plugin.Mfav*.zip
             dist/Jellyfin.Plugin.Mfav*.md5
             dist/Jellyfin.Plugin.Mfav*.sha256
-            dist/Jellyfin.Plugin.Mfav*.sig
-            dist/Jellyfin.Plugin.Mfav*.pem
-            dist/Jellyfin.Plugin.Mfav*.intoto.jsonl
 
       - name: Create or update release
-        if: ${{ github.event.inputs.publish_release == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="$(grep -oPm1 '(?<=<Version>)[^<]+' src/Jellyfin.Plugin.Mfa/Jellyfin.Plugin.Mfa.csproj)"
-          TAG="v${VERSION%.*}"
-          ZIP="dist/Jellyfin.Plugin.Mfav${VERSION}.zip"
-          MD5="dist/Jellyfin.Plugin.Mfav${VERSION}.md5"
-          SHA256="dist/Jellyfin.Plugin.Mfav${VERSION}.sha256"
-          SIG="dist/Jellyfin.Plugin.Mfav${VERSION}.zip.sig"
-          PEM="dist/Jellyfin.Plugin.Mfav${VERSION}.zip.pem"
-          ATTESTATION="dist/Jellyfin.Plugin.Mfav${VERSION}.zip.intoto.jsonl"
-          # Release body: prefer docs/release-notes/v<VERSION>.md, then docs/release-notes/<TAG>.md,
-          # then fall back to the generic blurb. Lets each release ship a real
-          # changelog without editing the workflow file.
-          NOTES_FILE=""
-          if [ -f "docs/release-notes/v${VERSION}.md" ]; then
-            NOTES_FILE="docs/release-notes/v${VERSION}.md"
-          elif [ -f "docs/release-notes/${TAG}.md" ]; then
-            NOTES_FILE="docs/release-notes/${TAG}.md"
+          FULL="${{ steps.ver.outputs.full }}"
+          TAG="${{ steps.ver.outputs.tag }}"
+          SHA="$(git rev-parse HEAD)"
+          ZIP="dist/Jellyfin.Plugin.Mfav${FULL}.zip"
+          MD5="dist/Jellyfin.Plugin.Mfav${FULL}.md5"
+          SHA256="dist/Jellyfin.Plugin.Mfav${FULL}.sha256"
+          NOTES_FILE="${{ steps.notes.outputs.file }}"
+
+          # Tag is created at the bump commit we just pushed (--target $SHA).
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" --title "$TAG" --target "$SHA" --notes-file "$NOTES_FILE"
           fi
-          if [ -z "$NOTES_FILE" ]; then
-            echo "Automated release for Jellyfin Security ${VERSION}. Sigstore-signed zip - verify with cosign verify-blob." > "$RUNNER_TEMP/notes.md"
-            NOTES_FILE="$RUNNER_TEMP/notes.md"
-          fi
-          gh release view "$TAG" >/dev/null 2>&1 \
-            && gh release edit "$TAG" --notes-file "$NOTES_FILE" \
-            || gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE"
-          gh release upload "$TAG" "$ZIP" "$MD5" "$SHA256" "$SIG" "$PEM" "$ATTESTATION" --clobber
+          gh release upload "$TAG" "$ZIP" "$MD5" "$SHA256" --clobber
