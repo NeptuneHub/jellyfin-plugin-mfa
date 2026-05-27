@@ -15,7 +15,6 @@ namespace Jellyfin.Plugin.TwoFactorAuth.Services;
 public class UserTwoFactorStore : IDisposable
 {
     // PERF-P4: hot files (users/*.json, audit.json) write compact JSON.
-    // api-keys.json keeps WriteIndented for admin readability via separate options.
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = false,
@@ -23,21 +22,12 @@ public class UserTwoFactorStore : IDisposable
         Converters = { new JsonStringEnumConverter() }
     };
 
-    private static readonly JsonSerializerOptions ApiKeysJsonOptions = new()
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Converters = { new JsonStringEnumConverter() }
-    };
-
     private readonly string _dataPath;
     private readonly string _usersPath;
     private readonly string _auditFilePath;
-    private readonly string _apiKeysFilePath;
 
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _userLocks = new();
     private readonly SemaphoreSlim _auditLock = new(1, 1);
-    private readonly SemaphoreSlim _apiKeysLock = new(1, 1);
 
     // PERF-P1: in-memory cache of user records. Populated lazily on first read.
     // SaveUserDataAsync writes-through (file + cache update). MutateAsync still
@@ -60,7 +50,6 @@ public class UserTwoFactorStore : IDisposable
         _dataPath = Path.Combine(applicationPaths.PluginConfigurationsPath, "TwoFactorAuth");
         _usersPath = Path.Combine(_dataPath, "users");
         _auditFilePath = Path.Combine(_dataPath, "audit.json");
-        _apiKeysFilePath = Path.Combine(_dataPath, "api-keys.json");
 
         Directory.CreateDirectory(_usersPath);
 
@@ -342,62 +331,6 @@ public class UserTwoFactorStore : IDisposable
     }
 
     // -------------------------------------------------------------------------
-    // API keys
-    // -------------------------------------------------------------------------
-
-    public async Task<IReadOnlyList<ApiKeyEntry>> GetApiKeysAsync()
-    {
-        await _apiKeysLock.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            var keys = await ReadApiKeysFileAsync().ConfigureAwait(false);
-
-            // One-shot migration: any legacy entry with a plaintext Key and
-            // no KeyHash gets hashed in place. After this we re-save so the
-            // raw key is wiped from disk. Idempotent — subsequent loads skip.
-            var migrated = false;
-            foreach (var k in keys)
-            {
-                if (string.IsNullOrEmpty(k.KeyHash) && !string.IsNullOrEmpty(k.Key))
-                {
-                    k.KeyHash = BypassEvaluator.HashApiKey(k.Key);
-                    if (string.IsNullOrEmpty(k.KeyPreview))
-                    {
-                        k.KeyPreview = k.Key.Length > 6 ? k.Key.Substring(0, 6) + "…" : k.Key;
-                    }
-                    k.Key = string.Empty;
-                    migrated = true;
-                }
-            }
-            if (migrated)
-            {
-                var json = JsonSerializer.Serialize(keys, ApiKeysJsonOptions);
-                await AtomicWriteAsync(_apiKeysFilePath, json).ConfigureAwait(false);
-            }
-
-            return keys;
-        }
-        finally
-        {
-            _apiKeysLock.Release();
-        }
-    }
-
-    public async Task SaveApiKeysAsync(List<ApiKeyEntry> keys)
-    {
-        await _apiKeysLock.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            var json = JsonSerializer.Serialize(keys, ApiKeysJsonOptions);
-            await AtomicWriteAsync(_apiKeysFilePath, json).ConfigureAwait(false);
-        }
-        finally
-        {
-            _apiKeysLock.Release();
-        }
-    }
-
-    // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
 
@@ -462,25 +395,6 @@ public class UserTwoFactorStore : IDisposable
         catch (Exception)
         {
             return new List<AuditEntry>();
-        }
-    }
-
-    private async Task<List<ApiKeyEntry>> ReadApiKeysFileAsync()
-    {
-        if (!File.Exists(_apiKeysFilePath))
-        {
-            return new List<ApiKeyEntry>();
-        }
-
-        try
-        {
-            var json = await File.ReadAllTextAsync(_apiKeysFilePath).ConfigureAwait(false);
-            return JsonSerializer.Deserialize<List<ApiKeyEntry>>(json, ApiKeysJsonOptions)
-                   ?? new List<ApiKeyEntry>();
-        }
-        catch (Exception)
-        {
-            return new List<ApiKeyEntry>();
         }
     }
 

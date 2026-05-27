@@ -6,86 +6,61 @@ using Jellyfin.Plugin.TwoFactorAuth.Models;
 
 namespace Jellyfin.Plugin.TwoFactorAuth.Services;
 
+/// <summary>
+/// In-memory lifecycle store for the 2FA challenge flow. Holds:
+///  - pending challenges (token → state) created when a password-valid login
+///    still needs a second factor;
+///  - per-(user,device) pre-verify marks, so the burst of WebSocket/HTTP
+///    sessions Jellyfin spawns right after a successful sign-in isn't
+///    re-challenged;
+///  - blocked access tokens (the enforcement failsafe — RequestBlockerMiddleware
+///    403s any request on a blocked token until 2FA completes);
+///  - verified access tokens, so SessionStarted reconnects on an already-verified
+///    token aren't re-blocked (issue #27 logout loop).
+/// All state is process-local and rebuilt on restart; users re-prompt once per
+/// device after a restart, which is acceptable.
+/// </summary>
 public class ChallengeStore : IDisposable
 {
     private readonly ConcurrentDictionary<string, ChallengeData> _challenges = new();
 
-    // Pre-verified keyed by (userId, deviceId). Prevents Swiftfin/TV sessions
-    // from piggy-backing on a web sign-in's 2-minute verification window.
+    // Pre-verified keyed by (userId, deviceId). Scoped to deviceId so a
+    // browser's verification can't grant another device a free pass.
     private readonly ConcurrentDictionary<string, DateTime> _preVerifiedDevices = new();
 
-    // Quick Connect needs a user-scoped SINGLE-CONSUME flag because the TV
-    // session that completes after phone approval has a different device id.
-    private readonly ConcurrentDictionary<Guid, DateTime> _quickConnectPending = new();
-
-    // Blocked devices — only the specific device that failed 2FA gets 401'd.
-    // Previously user-scoped, which signed every other device out on failure.
-    private readonly ConcurrentDictionary<string, DateTime> _blockedDevices = new();
-
-    // Blocked by access token — Jellyfin Web doesn't send X-Emby-Device-Id on
-    // most requests (verified via diagnostic logging), so the device-keyed
-    // block silently missed every request. Tokens are always present in
-    // X-Emby-Token so we block-by-token as the actual enforcement mechanism.
+    // Blocked by access token. Jellyfin Web doesn't reliably send
+    // X-Emby-Device-Id on every request, but the access token is always
+    // present, so token-blocking is the actual enforcement mechanism.
     private readonly ConcurrentDictionary<string, DateTime> _blockedTokens = new();
 
-    // Tokens the event handler has already approved (paired device / preVerified /
-    // IP bypass). The middleware checks this before issuing a challenge so a
-    // response whose paired-device status can only be determined via SessionInfo
-    // (e.g. Samsung Tizen, which sends no X-Emby-Authorization) doesn't get
-    // re-challenged after the event handler already said yes. Short expiry —
-    // these are one-shot per /Authenticate response intercept.
-    private readonly ConcurrentDictionary<string, DateTime> _approvedTokens = new();
-
-    // Tokens that have completed 2FA at least once in this process lifetime.
-    // SessionStarted fires not only on initial login but also on websocket
-    // reconnects, new tabs, idle-resume, and reverse-proxy WS drops. Without
-    // tracking this set, AuthenticationEventHandler's failsafe BlockToken
-    // re-blocks an already-verified token whenever SessionStarted fires
-    // outside the 2-minute pre-verify window, causing RequestBlockerMiddleware
-    // to 401 every subsequent request — the "logged out every couple minutes"
-    // loop reported in issue #27. 30-day TTL covers typical session lifetimes;
-    // on process restart users re-prompt once per device which is acceptable.
+    // Tokens that have completed 2FA at least once this process lifetime.
+    // SessionStarted fires on websocket reconnects, new tabs, and idle-resume,
+    // not only initial login — without this set the failsafe BlockToken would
+    // re-block an already-verified token and log the user out every few minutes.
     private readonly ConcurrentDictionary<string, DateTime> _verifiedTokens = new();
 
-    // PERF-P2: TCS waiters keyed by (userId, deviceId, token). The middleware
-    // races SessionStarted (which runs in parallel during Jellyfin auth);
-    // before this fix, the middleware polled _approvedTokens every 50ms up to
-    // 500ms which added 50–500ms of latency to every successful login. Now
-    // ApproveToken signals any matching waiter, and the middleware awaits
-    // with a short cancellation timeout. Worst-case latency is the actual
-    // race time, not 50ms-quantized.
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _approvalWaiters = new();
-
-    // PERF-P10: soft caps so a botnet can't OOM us by grabbing a billion
-    // entries before the 60s cleanup sweep catches up. Under steady state
-    // these caps are never hit. On overflow we drop the oldest expired
-    // entries; if everything is still live, we drop the lowest-expiry entries.
+    // PERF: soft cap so a botnet can't OOM us before the 60s cleanup sweep.
     private const int SoftCapPerDict = 100_000;
 
     private readonly Timer _cleanupTimer;
     private bool _disposed;
 
-    // SEC v2.4 L7: IsNullOrWhiteSpace instead of IsNullOrEmpty so a deviceId
-    // of " " (single space) or "\t" can't sneak past the deviceless guard and
-    // grant a user-wide pre-verify bypass.
+    // IsNullOrWhiteSpace (not IsNullOrEmpty) so a deviceId of " " can't sneak
+    // past the deviceless guard and grant a user-wide pre-verify bypass.
     private static string DeviceKey(Guid userId, string? deviceId)
         => string.IsNullOrWhiteSpace(deviceId) ? $"user:{userId:N}" : $"{userId:N}|{deviceId}";
 
-    /// <summary>
-    /// Mark a specific (user, device) pair as pre-verified — the next session
-    /// created for this combo within 2 minutes is allowed. Scoping to deviceId
-    /// prevents other devices of the same user from silently bypassing 2FA.
-    /// Deviceless / whitespace-only calls are IGNORED to avoid granting a
-    /// user-wide bypass.
-    /// </summary>
+    /// <summary>Mark a specific (user, device) pair pre-verified — the next
+    /// session created for this combo within the configured window is allowed.
+    /// Deviceless / whitespace-only calls are ignored to avoid a user-wide
+    /// bypass.</summary>
     public void MarkDevicePreVerified(Guid userId, string? deviceId)
     {
         if (string.IsNullOrWhiteSpace(deviceId))
         {
-            // Refuse to set a deviceless pre-verified mark — it would grant
-            // a free-pass window to every other device of this user.
             return;
         }
+
         var seconds = Math.Clamp(
             Plugin.Instance?.Configuration?.PreVerifyWindowSeconds ?? 120, 30, 900);
         _preVerifiedDevices[DeviceKey(userId, deviceId)] = DateTime.UtcNow.AddSeconds(seconds);
@@ -104,51 +79,11 @@ public class ChallengeStore : IDisposable
         _preVerifiedDevices.TryRemove(DeviceKey(userId, deviceId), out _);
     }
 
-    /// <summary>Mark a pending cross-device Quick Connect acceptance. Single consume.</summary>
-    public void MarkQuickConnectPending(Guid userId)
-    {
-        _quickConnectPending[userId] = DateTime.UtcNow.AddMinutes(2);
-    }
-
-    public bool ConsumeQuickConnectPending(Guid userId)
-    {
-        if (_quickConnectPending.TryRemove(userId, out var exp) && exp > DateTime.UtcNow)
-            return true;
-        return false;
-    }
-
-    public void BlockDevice(Guid userId, string? deviceId)
-    {
-        _blockedDevices[DeviceKey(userId, deviceId)] = DateTime.UtcNow.AddHours(24);
-        EnforceCap(_blockedDevices);
-    }
-
-    public void UnblockDevice(Guid userId, string? deviceId)
-    {
-        _blockedDevices.TryRemove(DeviceKey(userId, deviceId), out _);
-    }
-
-    /// <summary>Clear block for ALL devices of this user — used after /Authenticate succeeds.</summary>
-    public void UnblockAllForUser(Guid userId)
-    {
-        var prefix = $"{userId:N}|";
-        var userless = DeviceKey(userId, null);
-        foreach (var kv in _blockedDevices)
-        {
-            if (kv.Key.StartsWith(prefix, StringComparison.Ordinal) || kv.Key == userless)
-            {
-                _blockedDevices.TryRemove(kv.Key, out _);
-            }
-        }
-    }
-
-    /// <summary>Wipe ALL in-memory challenge state for a user — pre-verified,
-    /// blocked, and quick-connect-pending. Call on 2FA disable so a security
-    /// response fully revokes every form of bypass immediately.</summary>
+    /// <summary>Wipe all pre-verify state for a user. Call on 2FA disable/reset
+    /// so a security response fully revokes every pre-verify window immediately.
+    /// Live access tokens are revoked separately via SessionTerminationService.</summary>
     public void WipeAllForUser(Guid userId)
     {
-        UnblockAllForUser(userId);
-        _quickConnectPending.TryRemove(userId, out _);
         var prefix = $"{userId:N}|";
         var userless = $"user:{userId:N}";
         foreach (var kv in _preVerifiedDevices)
@@ -160,23 +95,10 @@ public class ChallengeStore : IDisposable
         }
     }
 
-    public bool IsDeviceBlocked(Guid userId, string? deviceId)
-    {
-        var key = DeviceKey(userId, deviceId);
-        if (_blockedDevices.TryGetValue(key, out var exp))
-        {
-            if (exp > DateTime.UtcNow) return true;
-            _blockedDevices.TryRemove(key, out _);
-        }
-        return false;
-    }
-
-    /// <summary>Block a specific access token. Middleware 401s every request
-    /// using it until the user completes 2FA and UnblockToken is called.
-    /// Short expiry (10 min) so a token that never gets verified is unblocked
-    /// by timeout — at which point the cleanup sweep should Logout the token
-    /// anyway. Previously 24h, which caused stale blocks that 401'd legitimate
-    /// sessions after testing.</summary>
+    /// <summary>Block a specific access token. RequestBlockerMiddleware 403s
+    /// every request using it until the user completes 2FA and UnblockToken is
+    /// called. 10-minute expiry so a token that never gets verified is unblocked
+    /// by timeout (by which point the session has ended).</summary>
     public void BlockToken(string token)
     {
         if (string.IsNullOrEmpty(token)) return;
@@ -201,12 +123,9 @@ public class ChallengeStore : IDisposable
         return false;
     }
 
-    /// <summary>Mark an access token as having completed 2FA. Called from the
-    /// /Authenticate success path and from the /Verify completion path.
-    /// AuthenticationEventHandler checks this before its failsafe BlockToken
-    /// so it doesn't re-block a token that has already been verified — without
-    /// which SessionStarted reconnects 3+ minutes after login cause a logout
-    /// loop (issue #27).</summary>
+    /// <summary>Mark an access token as having completed 2FA. The SessionStarted
+    /// failsafe checks this before re-blocking so reconnects on a verified token
+    /// don't cause a logout loop (issue #27).</summary>
     public void MarkTokenVerified(string token)
     {
         if (string.IsNullOrEmpty(token)) return;
@@ -225,103 +144,9 @@ public class ChallengeStore : IDisposable
         return false;
     }
 
-    /// <summary>Mark an access token as pre-approved by the event handler so the
-    /// response-intercept middleware won't overwrite the auth body with a 2FA
-    /// challenge. Approval is bound to (userId, deviceId, token) so a stale
-    /// flag on a recycled token can't leak bypass across users/devices.
-    /// Short 30s TTL — only needs to survive the single /Authenticate round trip.
-    /// PERF-P2: also signals any TCS waiter the middleware registered, so the
-    /// middleware wakes immediately instead of polling.</summary>
-    public void ApproveToken(string token, Guid userId, string? deviceId)
-    {
-        if (string.IsNullOrEmpty(token)) return;
-        var key = ApprovalKey(token, userId, deviceId);
-        _approvedTokens[key] = DateTime.UtcNow.AddSeconds(30);
-        EnforceCap(_approvedTokens);
-        // Signal any waiter immediately. TrySetResult is cheap if no waiter.
-        if (_approvalWaiters.TryRemove(key, out var tcs))
-        {
-            tcs.TrySetResult(true);
-        }
-    }
-
-    /// <summary>Single-use read — removes the flag atomically so a second call
-    /// with the same key returns false. This prevents a stale approval from
-    /// surviving into a second auth request reusing the same access token.</summary>
-    public bool ConsumeTokenApproval(string token, Guid userId, string? deviceId)
-    {
-        if (string.IsNullOrEmpty(token)) return false;
-        var key = ApprovalKey(token, userId, deviceId);
-        if (_approvedTokens.TryRemove(key, out var exp) && exp > DateTime.UtcNow)
-        {
-            return true;
-        }
-        return false;
-    }
-
-    /// <summary>PERF-P2: register a one-shot waiter that completes when
-    /// ApproveToken is called for the same key, or after the timeout elapses.
-    /// Returns true if approval came in, false on timeout.
-    ///
-    /// Called by the response-intercept middleware AFTER ConsumeTokenApproval
-    /// returns false (covers the race where SessionStarted hasn't completed
-    /// yet). Replaces the earlier 50ms-tick polling loop. The waiter is removed
-    /// when ApproveToken signals it, or when the timeout cleanup fires.</summary>
-    public async Task<bool> WaitForApprovalAsync(string token, Guid userId, string? deviceId, TimeSpan timeout)
-    {
-        if (string.IsNullOrEmpty(token)) return false;
-        var key = ApprovalKey(token, userId, deviceId);
-
-        // Check first — if approval already arrived, no need to wait.
-        if (ConsumeTokenApproval(token, userId, deviceId)) return true;
-
-        // RunContinuationsAsynchronously prevents the ApproveToken caller from
-        // running our continuation synchronously on its thread (which could
-        // deadlock if the caller holds locks).
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var registered = _approvalWaiters.GetOrAdd(key, tcs);
-        // If another concurrent caller registered first, await theirs instead.
-        // Either way, ApproveToken will signal whichever TCS won.
-        var winner = registered;
-
-        // Re-check approval AFTER registering the waiter to close the
-        // register-then-approve race: ApproveToken might have run in the
-        // microsecond between the first check and GetOrAdd.
-        if (ConsumeTokenApproval(token, userId, deviceId))
-        {
-            // We won the race against ApproveToken; tear our waiter down.
-            if (_approvalWaiters.TryRemove(key, out var stale)) stale.TrySetResult(false);
-            return true;
-        }
-
-        try
-        {
-            using var cts = new System.Threading.CancellationTokenSource(timeout);
-            await using var _ = cts.Token.Register(() =>
-            {
-                if (_approvalWaiters.TryRemove(key, out var t)) t.TrySetResult(false);
-            });
-            return await winner.Task.ConfigureAwait(false);
-        }
-        catch
-        {
-            // On any unexpected error, treat as no-approval; middleware falls
-            // through to issuing a challenge (the safe default).
-            return false;
-        }
-    }
-
-    private static string ApprovalKey(string token, Guid userId, string? deviceId)
-        => $"{userId:N}|{deviceId ?? string.Empty}|{token}";
-
-    /// <summary>PERF-P10: enforce SoftCapPerDict on a DateTime-valued
-    /// ConcurrentDictionary. Cheap fast path: if under cap, return. Slow
-    /// path runs only on the unhappy case where a botnet outraced the 60s
-    /// sweep. We drop entries whose expiry is nearest (oldest first).</summary>
     private static void EnforceCap(ConcurrentDictionary<string, DateTime> dict)
     {
         if (dict.Count <= SoftCapPerDict) return;
-        // Snapshot, sort by expiry ascending, evict the bottom 10% to amortise.
         var snapshot = dict.ToArray();
         Array.Sort(snapshot, (a, b) => a.Value.CompareTo(b.Value));
         var evictCount = snapshot.Length / 10;
@@ -331,33 +156,10 @@ public class ChallengeStore : IDisposable
         }
     }
 
-    // Seen PairConfirm signatures — prevents an attacker with a captured
-    // signed QR-pair link from replaying it inside the 5-minute TTL window
-    // after the user unpaired/paired anew.
-    private readonly ConcurrentDictionary<string, DateTime> _seenPairTokens = new();
-
-    /// <summary>Try to mark this pair-confirm token as consumed. Returns false
-    /// if the exact signature was seen before (replay).</summary>
-    public bool TryConsumePairToken(string signature)
-    {
-        if (string.IsNullOrEmpty(signature)) return true;
-        // 10-minute window covers the 5-minute token TTL with generous margin.
-        return _seenPairTokens.TryAdd(signature, DateTime.UtcNow.AddMinutes(10));
-    }
-
-    public void UnblockAllTokensForUser(Guid userId, IEnumerable<string> userTokens)
-    {
-        foreach (var t in userTokens)
-        {
-            if (!string.IsNullOrEmpty(t)) _blockedTokens.TryRemove(t, out _);
-        }
-    }
-
     public ChallengeStore()
     {
-        // Run cleanup every 60 seconds
         _cleanupTimer = new Timer(
-            _ => RemoveExpiredChallenges(),
+            _ => RemoveExpired(),
             null,
             TimeSpan.FromSeconds(60),
             TimeSpan.FromSeconds(60));
@@ -399,7 +201,7 @@ public class ChallengeStore : IDisposable
 
     public ChallengeData? GetChallenge(string token)
     {
-        if (!_challenges.TryGetValue(token, out var challenge))
+        if (string.IsNullOrEmpty(token) || !_challenges.TryGetValue(token, out var challenge))
         {
             return null;
         }
@@ -412,9 +214,11 @@ public class ChallengeStore : IDisposable
         return challenge;
     }
 
+    /// <summary>Atomically claim a challenge. Returns true exactly once across
+    /// concurrent callers, so one OTP code can never mint two sessions.</summary>
     public bool ConsumeChallenge(string token)
     {
-        if (!_challenges.TryGetValue(token, out var challenge))
+        if (string.IsNullOrEmpty(token) || !_challenges.TryGetValue(token, out var challenge))
         {
             return false;
         }
@@ -424,9 +228,6 @@ public class ChallengeStore : IDisposable
             return false;
         }
 
-        // SEC v2.4 L2: atomic claim. Previously this was check-then-set which
-        // allowed two concurrent /Verify requests against the same challenge
-        // token to both succeed and mint two sessions from one OTP code.
         return challenge.TryConsume();
     }
 
@@ -435,7 +236,7 @@ public class ChallengeStore : IDisposable
         _challenges.TryRemove(token, out _);
     }
 
-    private void RemoveExpiredChallenges()
+    private void RemoveExpired()
     {
         var now = DateTime.UtcNow;
         foreach (var kvp in _challenges)
@@ -449,29 +250,13 @@ public class ChallengeStore : IDisposable
         {
             if (kv.Value <= now) _preVerifiedDevices.TryRemove(kv.Key, out _);
         }
-        foreach (var kv in _quickConnectPending)
-        {
-            if (kv.Value <= now) _quickConnectPending.TryRemove(kv.Key, out _);
-        }
-        foreach (var kv in _blockedDevices)
-        {
-            if (kv.Value <= now) _blockedDevices.TryRemove(kv.Key, out _);
-        }
         foreach (var kv in _blockedTokens)
         {
             if (kv.Value <= now) _blockedTokens.TryRemove(kv.Key, out _);
         }
-        foreach (var kv in _approvedTokens)
-        {
-            if (kv.Value <= now) _approvedTokens.TryRemove(kv.Key, out _);
-        }
         foreach (var kv in _verifiedTokens)
         {
             if (kv.Value <= now) _verifiedTokens.TryRemove(kv.Key, out _);
-        }
-        foreach (var kv in _seenPairTokens)
-        {
-            if (kv.Value <= now) _seenPairTokens.TryRemove(kv.Key, out _);
         }
     }
 

@@ -92,15 +92,16 @@ public class RecoveryCodeServiceTests
     }
 
     [Fact]
-    public void Verify_accepts_legacy_v1_hash()
+    public void Verify_rejects_legacy_v1_hash()
     {
-        // v1 legacy: bare base64(SHA-256(utf8(code))).
+        // v1 legacy (bare base64(SHA-256(utf8(code)))) is no longer accepted —
+        // only the salted v2 format verifies. Users with legacy codes regenerate.
         var code = "ABCDE-FGHJK";
         var normalized = RecoveryCodeService.NormalizeForCompare(code);
         var sha = SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
         var legacyHash = Convert.ToBase64String(sha);
 
-        Assert.True(RecoveryCodeService.Verify(normalized, legacyHash));
+        Assert.False(RecoveryCodeService.Verify(normalized, legacyHash));
     }
 
     [Fact]

@@ -200,11 +200,13 @@ public class ChallengeStoreTests
     }
 
     [Fact]
-    public void TryConsumePairToken_rejects_replay()
+    public void MarkTokenVerified_then_IsTokenVerified_returns_true()
     {
         using var store = new ChallengeStore();
-        Assert.True(store.TryConsumePairToken("sig-1"));
-        Assert.False(store.TryConsumePairToken("sig-1"));
-        Assert.True(store.TryConsumePairToken("sig-2"));
+        const string token = "tok-verified";
+
+        Assert.False(store.IsTokenVerified(token));
+        store.MarkTokenVerified(token);
+        Assert.True(store.IsTokenVerified(token));
     }
 }

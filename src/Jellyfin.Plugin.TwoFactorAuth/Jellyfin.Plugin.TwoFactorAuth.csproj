@@ -1,53 +1,35 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <RootNamespace>Jellyfin.Plugin.TwoFactorAuth</RootNamespace>
     <AssemblyName>Jellyfin.Plugin.TwoFactorAuth</AssemblyName>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>2.4.12.1</Version>
-    <AssemblyVersion>2.4.12.1</AssemblyVersion>
-    <FileVersion>2.4.12.1</FileVersion>
+    <Version>3.0.0.0</Version>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
     <AnalysisMode>Recommended</AnalysisMode>
     <AnalysisLevel>latest</AnalysisLevel>
     <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
-    <!-- v2.4.2: treat warnings as errors so future regressions can't ship
-         silently. The .editorconfig at repo root silences pure perf-only
-         rules (CA1848/1822/1805/1845/1865/1859/1869) with documented
-         justifications; everything else is either fixed or suppressed at
-         the symbol level. -->
+    <!-- Treat warnings as errors so regressions can't ship silently. The
+         .editorconfig at repo root silences pure perf-only rules with
+         documented justifications. -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <!-- OSSF Pinned-Dependencies: lock every transitive NuGet by hash so
-         dotnet restore is reproducible across machines and CI runs. CI uses
-         locked mode (the cli flag) so any drift between the lock file and
-         csproj fails fast. The Jellyfin.Controller and Jellyfin.Model
-         wildcards stay in the csproj but the lock file records the exact
-         version resolved at lock time. -->
+    <!-- Lock every transitive NuGet by hash so dotnet restore is reproducible.
+         CI uses locked mode so any drift between the lock file and csproj fails
+         fast. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Jellyfin.Plugin.TwoFactorAuth.Tests" />
-    <InternalsVisibleTo Include="Jellyfin.Plugin.TwoFactorAuth.Fuzz" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Otp.NET" Version="1.4.1" />
     <PackageReference Include="QRCoder" Version="1.8.0" />
-    <!-- Issue #29: MailKit replaces System.Net.Mail.SmtpClient for SMTP. The
-         BCL client only supports STARTTLS (port 587) — it silently fails on
-         port 465 (Implicit TLS / SMTPS) because EnableSsl=true sends EHLO in
-         plaintext to a server expecting an SSL ClientHello. Microsoft has
-         officially deprecated SmtpClient for SMTPS and recommends MailKit. -->
-    <PackageReference Include="MailKit" Version="4.16.0" />
-    <PackageReference Include="Fido2" Version="4.0.1" />
-    <PackageReference Include="MaxMind.Db" Version="5.0.0" />
-    <PackageReference Include="QuestPDF" Version="2026.5.0" />
-    <PackageReference Include="IdentityModel.OidcClient" Version="6.0.0" />
-    <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.18.0" />
-    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.18.0" />
     <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.300">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -55,21 +37,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Pinned to 10.11.8 deliberately. The wildcard form (10.11.*) silently
-         pulled 10.11.9 during a v2.4.3 release rebuild, and 10.11.9 changed
-         IUserManager.Users in a way that broke the build. Bumping these to a
-         newer 10.11.x is a deliberate change that requires verifying the
-         plugin still compiles and behaves correctly against the new ABI. -->
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.8" />
-    <PackageReference Include="Jellyfin.Model" Version="10.11.8" />
+    <!-- Pinned to 10.10.6 (the latest 10.10.x on NuGet). The plugin targets
+         ABI 10.10.0.0 (see meta.json) and loads on any Jellyfin 10.10.x server,
+         including 10.10.7. Bumping is a deliberate change that requires
+         re-verifying the plugin compiles and behaves against the new ABI. -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.10.6" />
+    <PackageReference Include="Jellyfin.Model" Version="10.10.6" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Pages\**\*" />
-    <!-- Lato-Regular + Lato-Bold embedded so QuestPDF has a real font file
-         to register at runtime. Without this the PDF renders empty glyph
-         boxes inside Linux containers because no system fonts are installed. -->
-    <EmbeddedResource Include="Fonts\**\*.ttf" />
   </ItemGroup>
 
 </Project>

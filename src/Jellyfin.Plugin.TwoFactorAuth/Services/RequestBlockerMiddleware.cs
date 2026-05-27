@@ -45,10 +45,8 @@ public class RequestBlockerMiddleware
         "/TwoFactorAuth/Setup",
         "/TwoFactorAuth/Authenticate",
         "/TwoFactorAuth/Verify",
-        "/TwoFactorAuth/Email/Send",
         "/TwoFactorAuth/Challenge",
         "/TwoFactorAuth/inject.js",
-        "/TwoFactorAuth/PairConfirm",
     };
 
     public async Task InvokeAsync(HttpContext context)
@@ -128,15 +126,6 @@ public class RequestBlockerMiddleware
             return;
         }
 
-        // When a 2FA-verified user approves a Quick Connect code on this device,
-        // the INCOMING (TV) session has a different deviceId. Use a single-consume
-        // user-scoped flag so the next SessionStarted for this user gets through.
-        if (userId != Guid.Empty && path.Contains("/QuickConnect/Authorize", StringComparison.OrdinalIgnoreCase))
-        {
-            _challengeStore.MarkQuickConnectPending(userId);
-            _logger.LogInformation("[2FA] QuickConnect authorize by {UserId} — one-shot allow for incoming session", userId);
-        }
-
         await _next(context).ConfigureAwait(false);
     }
 
@@ -151,10 +140,10 @@ public class RequestBlockerMiddleware
 
         // X-Emby-Authorization is a metadata header carrying Client=, Device=,
         // DeviceId=, Version= even on UNAUTHENTICATED login attempts. Only use
-        // it if it actually contains a token=... segment.
+        // it if it actually contains a Token=... segment.
         var embyAuth = ctx.Request.Headers["X-Emby-Authorization"].FirstOrDefault()
             ?? ctx.Request.Headers["Authorization"].FirstOrDefault();
-        var headerToken = TwoFactorEnforcementMiddleware.ParseEmbyAuth(embyAuth, "Token");
+        var headerToken = ParseEmbyAuth(embyAuth, "Token");
         if (!string.IsNullOrEmpty(headerToken))
         {
             return headerToken;
@@ -167,5 +156,29 @@ public class RequestBlockerMiddleware
         }
 
         return null;
+    }
+
+    /// <summary>Pull a key (Token / Client / Device / DeviceId) out of an
+    /// X-Emby-Authorization header. Jellyfin Web and Tizen clients pack the
+    /// token in here rather than the dedicated header.</summary>
+    private static string? ParseEmbyAuth(string? header, string key)
+    {
+        if (string.IsNullOrEmpty(header) || string.IsNullOrEmpty(key)) return null;
+        var needle = key + "=";
+        var idx = header.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return null;
+        if (idx > 0)
+        {
+            var prev = header[idx - 1];
+            if (prev != ',' && prev != ' ') return null;
+        }
+        var rest = header.Substring(idx + needle.Length);
+        if (rest.StartsWith("\"", StringComparison.Ordinal))
+        {
+            var end = rest.IndexOf('"', 1);
+            return end > 0 ? rest.Substring(1, end - 1) : null;
+        }
+        var comma = rest.IndexOf(',');
+        return (comma > 0 ? rest.Substring(0, comma) : rest).Trim();
     }
 }

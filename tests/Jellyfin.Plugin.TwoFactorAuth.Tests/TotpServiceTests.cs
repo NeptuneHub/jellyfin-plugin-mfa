@@ -131,18 +131,7 @@ public class TotpServiceTests
     // ---- Encryption (AES-GCM with userId AAD) ------------------------------
 
     [Fact]
-    public void EncryptSecret_then_DecryptSecret_roundtrips_v1_format()
-    {
-        var svc = NewService();
-        var secret = NewBase32Secret();
-
-        var encrypted = svc.EncryptSecret(secret);
-        Assert.DoesNotContain("v2:", encrypted);
-        Assert.Equal(secret, svc.DecryptSecret(encrypted));
-    }
-
-    [Fact]
-    public void EncryptSecret_with_userId_uses_v2_format()
+    public void EncryptSecret_uses_v2_format_bound_to_user()
     {
         var svc = NewService();
         var secret = NewBase32Secret();
@@ -154,24 +143,37 @@ public class TotpServiceTests
     }
 
     [Fact]
-    public void DecryptSecret_v2_requires_userId()
+    public void EncryptSecret_rejects_empty_userId()
     {
         var svc = NewService();
-        var secret = NewBase32Secret();
-        var userId = Guid.NewGuid();
+        Assert.Throws<ArgumentException>(() => svc.EncryptSecret(NewBase32Secret(), Guid.Empty));
+    }
 
-        var encrypted = svc.EncryptSecret(secret, userId);
-        // ThrowsAny — .NET's AesGcm raises AuthenticationTagMismatchException
-        // on AAD mismatch, which is a subclass of CryptographicException.
+    [Fact]
+    public void DecryptSecret_rejects_empty_userId()
+    {
+        var svc = NewService();
+        var encrypted = svc.EncryptSecret(NewBase32Secret(), Guid.NewGuid());
         Assert.ThrowsAny<System.Security.Cryptography.CryptographicException>(
-            () => svc.DecryptSecret(encrypted, null));
+            () => svc.DecryptSecret(encrypted, Guid.Empty));
+    }
+
+    [Fact]
+    public void DecryptSecret_rejects_non_v2_format()
+    {
+        // Legacy v1 (no-AAD) blobs and any other format are no longer accepted —
+        // a plain base64 string without the v2 prefix must be rejected.
+        var svc = NewService();
+        var bogus = Convert.ToBase64String(new byte[40]);
+        Assert.ThrowsAny<System.Security.Cryptography.CryptographicException>(
+            () => svc.DecryptSecret(bogus, Guid.NewGuid()));
     }
 
     [Fact]
     public void DecryptSecret_v2_with_wrong_userId_throws()
     {
-        // SEC-M3: AAD binding means swapping the v2 ciphertext to a different
-        // user's record fails authentication, blocking on-disk identity swap.
+        // AAD binding means swapping the v2 ciphertext to a different user's
+        // record fails authentication, blocking on-disk identity swap.
         var svc = NewService();
         var secret = NewBase32Secret();
         var userA = Guid.NewGuid();
@@ -180,44 +182,6 @@ public class TotpServiceTests
         var encrypted = svc.EncryptSecret(secret, userA);
         Assert.ThrowsAny<System.Security.Cryptography.CryptographicException>(
             () => svc.DecryptSecret(encrypted, userB));
-    }
-
-    [Fact]
-    public void MigrateToV2_promotes_v1_ciphertext()
-    {
-        var svc = NewService();
-        var secret = NewBase32Secret();
-        var userId = Guid.NewGuid();
-
-        var v1 = svc.EncryptSecret(secret); // no userId -> v1
-        Assert.DoesNotContain("v2:", v1);
-
-        var v2 = svc.MigrateToV2(v1, userId);
-        Assert.NotNull(v2);
-        Assert.StartsWith("v2:", v2);
-        Assert.Equal(secret, svc.DecryptSecret(v2!, userId));
-    }
-
-    [Fact]
-    public void MigrateToV2_is_idempotent_on_v2_input()
-    {
-        var svc = NewService();
-        var secret = NewBase32Secret();
-        var userId = Guid.NewGuid();
-
-        var v2 = svc.EncryptSecret(secret, userId);
-        var twice = svc.MigrateToV2(v2, userId);
-        Assert.Equal(v2, twice);
-    }
-
-    [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    public void MigrateToV2_passes_through_empty_input(string? input)
-    {
-        var svc = NewService();
-        var result = svc.MigrateToV2(input, Guid.NewGuid());
-        Assert.Equal(input, result);
     }
 
     [Fact]

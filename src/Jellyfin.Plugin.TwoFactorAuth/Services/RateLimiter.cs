@@ -66,26 +66,15 @@ public class RateLimiter
         _hits.TryRemove(key, out _);
     }
 
-    /// <summary>Derives a client key for rate limiting that's safe behind a
-    /// reverse proxy. Without this, every request arriving from the proxy's
-    /// loopback address would share a single bucket — allowing an attacker to
-    /// DoS legitimate users by burning through the shared budget.
-    ///
-    /// Rules:
-    /// - If the direct peer is in TrustedProxyCidrs AND TrustForwardedFor is
-    ///   on, use the leftmost X-Forwarded-For entry.
-    /// - IPv6 addresses are bucketed by /64 so an attacker can't rotate the
-    ///   host portion of their address to bypass.
-    /// - Falls back to the direct peer IP when no proxy is configured.
-    /// </summary>
+    /// <summary>Derives a per-client rate-limit key from the direct TCP peer
+    /// address. We deliberately do NOT trust X-Forwarded-For ourselves — admins
+    /// behind a reverse proxy should configure Jellyfin's own forwarded-headers
+    /// support (KnownProxies / KnownNetworks) so RemoteIpAddress already reflects
+    /// the real client. IPv6 is bucketed by /64 so an attacker can't rotate the
+    /// host portion of their address to bypass the limit.</summary>
     public static string ClientKey(HttpContext context)
     {
-        // SEC-H2: delegate to BypassEvaluator.ResolveClientIp which walks the
-        // X-Forwarded-For chain right-to-left, picking the first hop NOT in
-        // TrustedProxyCidrs. The previous leftmost-of-XFF logic was spoofable
-        // by an attacker prepending an IP to the header, since trusted proxies
-        // (Cloudflare etc.) APPEND rather than overwrite XFF.
-        var effectiveIp = BypassEvaluator.ResolveClientIp(context) ?? "unknown";
+        var effectiveIp = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
         // Collapse IPv6 to /64 so per-host rotation within the same network
         // shares a bucket.

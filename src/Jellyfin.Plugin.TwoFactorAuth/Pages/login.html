@@ -110,11 +110,6 @@
 
         <a class="toggle-link" id="toggleRecovery">Use a recovery code instead</a>
 
-        <label class="trust-row">
-            <input type="checkbox" id="trustDevice" />
-            <span>Trust this device</span>
-        </label>
-
         <button id="btnLogin">Sign In</button>
 
         <p class="hint">
@@ -248,8 +243,7 @@
                 body: JSON.stringify({
                     username: username,
                     password: password,
-                    code: code,
-                    trustDevice: document.getElementById('trustDevice').checked
+                    code: code
                 })
             }).then(function(r) {
                 if (r.ok) return r.json();

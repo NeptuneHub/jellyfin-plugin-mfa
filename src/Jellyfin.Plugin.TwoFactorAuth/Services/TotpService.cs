@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using MediaBrowser.Common.Configuration;
 using Microsoft.Extensions.Logging;
@@ -27,8 +31,9 @@ public class TotpService
     /// <summary>
     /// Loads a persistent 32-byte AES key from the plugin data directory, creating one if needed.
     /// This survives Jellyfin restarts so encrypted TOTP secrets remain decryptable.
-    /// Unix: chmod 0600. Windows: inherits plugin-dir ACLs — admins should
-    /// ensure the plugin dir is restricted to the Jellyfin service account.
+    /// File permissions are locked down on every load: Unix chmod 0600; Windows
+    /// an explicit DACL granting only the running account + SYSTEM + Administrators,
+    /// with inheritance disabled, so a non-admin local user can't read the key.
     /// </summary>
     private byte[] LoadOrCreateKey(IApplicationPaths applicationPaths)
     {
@@ -43,11 +48,10 @@ public class TotpService
                 var bytes = File.ReadAllBytes(keyPath);
                 if (bytes.Length == 32)
                 {
-                    // SEC-L9: reapply 0600 on every load. A file created by an
-                    // older plugin version, restored from a backup, or copied
-                    // by the admin may have lax perms. Repeating chmod is
-                    // cheap and idempotent.
-                    TryChmod0600(keyPath);
+                    // Reapply restrictive perms on every load. A file created by
+                    // an older plugin version, restored from a backup, or copied
+                    // by the admin may have lax perms. Cheap and idempotent.
+                    RestrictKeyFilePermissions(keyPath);
                     return bytes;
                 }
                 _logger.LogWarning("Existing secret.key is not 32 bytes — regenerating");
@@ -60,22 +64,59 @@ public class TotpService
 
         var key = RandomNumberGenerator.GetBytes(32);
         File.WriteAllBytes(keyPath, key);
-        TryChmod0600(keyPath);
+        RestrictKeyFilePermissions(keyPath);
 
         _logger.LogInformation("Generated new persistent encryption key at {Path}", keyPath);
         return key;
     }
 
-    private static void TryChmod0600(string path)
+    private void RestrictKeyFilePermissions(string path)
     {
         try
         {
-            if (!OperatingSystem.IsWindows())
+            if (OperatingSystem.IsWindows())
+            {
+                RestrictKeyFilePermissionsWindows(path);
+            }
+            else
             {
                 File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
         }
-        catch { /* best effort */ }
+        catch (Exception ex)
+        {
+            // Best effort — never fail startup over an ACL tweak, but surface it
+            // so an admin can harden a multi-user host manually if needed.
+            _logger.LogWarning(ex, "[2FA] Could not restrict permissions on {Path}; ensure the plugin data dir is readable only by the Jellyfin service account", path);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void RestrictKeyFilePermissionsWindows(string path)
+    {
+        var fileInfo = new FileInfo(path);
+        var security = new FileSecurity();
+
+        // Disable inheritance and drop any inherited ACEs so only the explicit
+        // grants below apply.
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+
+        var grantees = new List<IdentityReference>();
+        var current = WindowsIdentity.GetCurrent().User;
+        if (current is not null)
+        {
+            grantees.Add(current);
+        }
+        grantees.Add(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
+        grantees.Add(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null));
+
+        foreach (var who in grantees)
+        {
+            security.AddAccessRule(new FileSystemAccessRule(
+                who, FileSystemRights.FullControl, AccessControlType.Allow));
+        }
+
+        fileInfo.SetAccessControl(security);
     }
 
     public (string secret, string qrCodeBase64, string manualEntryKey) GenerateSecret(string username)
@@ -99,49 +140,50 @@ public class TotpService
     }
 
     /// <summary>
-    /// Encrypts a base32-encoded TOTP secret using AES-GCM with the persistent key.
-    /// SEC-M3: when userId is provided, binds the ciphertext to that user via
-    /// AAD so an attacker with file-system write access can't swap blobs
-    /// between users' JSON files to log in as another user. Output format:
-    ///   v2: "v2:" + base64( nonce[12] | ciphertext | tag[16] )  (AAD = userId.ToByteArray())
-    ///   v1 (legacy, no AAD): base64( nonce[12] | ciphertext | tag[16] )
-    /// New writes are always v2 when userId is supplied. Decrypt accepts both.
+    /// Encrypts a base32-encoded TOTP secret using AES-256-GCM with the
+    /// persistent key, binding the ciphertext to <paramref name="userId"/> via
+    /// AAD so an attacker with file-system write access can't swap blobs between
+    /// users' JSON files to log in as another user. Output is always v2:
+    ///   "v2:" + base64( nonce[12] | ciphertext | tag[16] )  (AAD = userId bytes)
     /// </summary>
-    public string EncryptSecret(string base32Secret, Guid? userId = null)
+    public string EncryptSecret(string base32Secret, Guid userId)
     {
+        if (userId == Guid.Empty)
+        {
+            throw new ArgumentException("A non-empty userId is required to encrypt a TOTP secret.", nameof(userId));
+        }
+
         var plaintext = Encoding.UTF8.GetBytes(base32Secret);
         var nonce = RandomNumberGenerator.GetBytes(12);
         var ciphertext = new byte[plaintext.Length];
         var tag = new byte[16];
 
         using var aes = new AesGcm(_encryptionKey, 16);
-        if (userId.HasValue && userId.Value != Guid.Empty)
-        {
-            var aad = userId.Value.ToByteArray();
-            aes.Encrypt(nonce, plaintext, ciphertext, tag, aad);
-        }
-        else
-        {
-            aes.Encrypt(nonce, plaintext, ciphertext, tag);
-        }
+        aes.Encrypt(nonce, plaintext, ciphertext, tag, userId.ToByteArray());
 
         var result = new byte[nonce.Length + ciphertext.Length + tag.Length];
         Buffer.BlockCopy(nonce, 0, result, 0, nonce.Length);
         Buffer.BlockCopy(ciphertext, 0, result, nonce.Length, ciphertext.Length);
         Buffer.BlockCopy(tag, 0, result, nonce.Length + ciphertext.Length, tag.Length);
-        var b64 = Convert.ToBase64String(result);
-        return userId.HasValue && userId.Value != Guid.Empty ? "v2:" + b64 : b64;
+        return "v2:" + Convert.ToBase64String(result);
     }
 
-    public string DecryptSecret(string encryptedSecret, Guid? userId = null)
+    /// <summary>Decrypts a v2 (AAD-bound) TOTP secret. Legacy v1 (no-AAD)
+    /// ciphertexts are rejected — a v2 prefix bound to the user id is required.
+    /// A non-v2 or tamper-detected blob throws; callers treat that as "re-enroll".</summary>
+    public string DecryptSecret(string encryptedSecret, Guid userId)
     {
-        // SEC-M3: detect v2 (AAD-bound) vs v1 (legacy, no AAD). The "v2:"
-        // prefix is unambiguous — base64 alphabet does not contain ':'. v1
-        // ciphertexts are still accepted to keep existing enrollments working
-        // until they next rotate; they auto-upgrade to v2 on next save.
-        bool isV2 = encryptedSecret.StartsWith("v2:", StringComparison.Ordinal);
-        var b64 = isV2 ? encryptedSecret.Substring(3) : encryptedSecret;
-        var bytes = Convert.FromBase64String(b64);
+        if (userId == Guid.Empty)
+        {
+            throw new CryptographicException("A non-empty userId is required to decrypt a TOTP secret.");
+        }
+        if (string.IsNullOrEmpty(encryptedSecret)
+            || !encryptedSecret.StartsWith("v2:", StringComparison.Ordinal))
+        {
+            throw new CryptographicException("Unsupported TOTP secret format; re-enrollment required.");
+        }
+
+        var bytes = Convert.FromBase64String(encryptedSecret.Substring(3));
         if (bytes.Length < 12 + 16)
         {
             throw new CryptographicException("Ciphertext too short");
@@ -156,41 +198,8 @@ public class TotpService
 
         var plaintext = new byte[ciphertext.Length];
         using var aes = new AesGcm(_encryptionKey, 16);
-        if (isV2)
-        {
-            if (!userId.HasValue || userId.Value == Guid.Empty)
-            {
-                throw new CryptographicException("v2 ciphertext requires userId for decrypt");
-            }
-            var aad = userId.Value.ToByteArray();
-            aes.Decrypt(nonce, ciphertext, tag, plaintext, aad);
-        }
-        else
-        {
-            aes.Decrypt(nonce, ciphertext, tag, plaintext);
-        }
+        aes.Decrypt(nonce, ciphertext, tag, plaintext, userId.ToByteArray());
         return Encoding.UTF8.GetString(plaintext);
-    }
-
-    /// <summary>SEC-M3 migration helper: re-encrypt a v1 (no-AAD) ciphertext
-    /// as v2 bound to userId. Returns the v2 string. Idempotent — already-v2
-    /// inputs are returned unchanged. Errors are logged and the original
-    /// returned so a corrupt blob doesn't lock the user out (they can
-    /// re-enroll).</summary>
-    public string? MigrateToV2(string? encryptedSecret, Guid userId)
-    {
-        if (string.IsNullOrEmpty(encryptedSecret)) return encryptedSecret;
-        if (encryptedSecret.StartsWith("v2:", StringComparison.Ordinal)) return encryptedSecret;
-        try
-        {
-            var plaintext = DecryptSecret(encryptedSecret, null);
-            return EncryptSecret(plaintext, userId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "[2FA] TOTP secret v1->v2 migration failed for user {UserId}", userId);
-            return encryptedSecret;
-        }
     }
 
     /// <summary>Validate a TOTP code with replay protection. SEC-M4: callers

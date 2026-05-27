@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\gcola\\\\Music\\\\JellyfinSecurity\" -Recurse -Force)",
+      "Bash(Select-Object FullName, PSIsContainer)",
+      "Bash(Sort-Object FullName)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\gcola\\\\Music\\\\JellyfinSecurity\" -Recurse -Name)",
+      "Bash(Select-Object -First 50)",
+      "Bash(grep -E \"\\\\.cs$\")",
+      "Bash(mkdir -p \"C:\\\\Users\\\\gcola\\\\.claude\\\\plans\" 2>/dev/null; echo done)",
+      "WebSearch",
+      "Bash(dotnet --version)",
+      "Bash(dotnet restore *)",
+      "PowerShell($d = Get-Command dotnet -ErrorAction SilentlyContinue; if \\($d\\) { $d.Source; & dotnet --version } else { \"dotnet not on PATH\"; Test-Path \"C:\\\\Program Files\\\\dotnet\\\\dotnet.exe\" })",
+      "Bash(git check-ignore *)",
+      "WebFetch(domain:github.com)",
+      "Bash(git fetch *)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\gcola\\.claude\\plans"
+    ]
+  }
+}

@@ -1,32 +1,15 @@
 {
-  "Name": "Jellyfin Security",
-  "Description": "Comprehensive Jellyfin security: TOTP & email 2FA, passkeys, OIDC/SSO sign-in (Google, GitHub, Authelia, Authentik, Keycloak, PocketID, Cloudflare Access, ...), brute-force IP banning, impossible-travel detection, per-user IP allowlist, device pairing, trusted browsers, and audit log.",
+  "Name": "Two-Factor Authentication",
+  "Description": "Per-user two-factor authentication for Jellyfin: TOTP authenticator enrollment with single-use recovery codes, enforced at sign-in for enrolled users.",
   "Guid": "94879a0c-da24-4eb1-aa06-f28b4b9333b1",
-  "Version": "2.4.12.1",
-  "TargetAbi": "10.11.0.0",
+  "Version": "3.0.0.0",
+  "TargetAbi": "10.10.0.0",
   "Owner": "ZL154",
-  "Overview": "Comprehensive Jellyfin security: 2FA, passkeys, OIDC/SSO, brute-force protection, impossible-travel detection, IP allowlist, and audit logging.",
+  "Overview": "Per-user TOTP 2FA with recovery codes for Jellyfin.",
   "Category": "General",
   "Assemblies": [
     "Jellyfin.Plugin.TwoFactorAuth.dll",
     "Otp.NET.dll",
-    "QRCoder.dll",
-    "Fido2.dll",
-    "Fido2.Models.dll",
-    "Microsoft.Bcl.Memory.dll",
-    "System.Formats.Cbor.dll",
-    "NSec.Cryptography.dll",
-    "MaxMind.Db.dll",
-    "QuestPDF.dll",
-    "IdentityModel.OidcClient.dll",
-    "IdentityModel.dll",
-    "Microsoft.IdentityModel.Abstractions.dll",
-    "Microsoft.IdentityModel.JsonWebTokens.dll",
-    "Microsoft.IdentityModel.Logging.dll",
-    "Microsoft.IdentityModel.Tokens.dll",
-    "System.IdentityModel.Tokens.Jwt.dll",
-    "MailKit.dll",
-    "MimeKit.dll",
-    "BouncyCastle.Cryptography.dll"
+    "QRCoder.dll"
   ]
 }
