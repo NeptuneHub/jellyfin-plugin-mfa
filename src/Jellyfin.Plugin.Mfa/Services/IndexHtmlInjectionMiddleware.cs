@@ -116,6 +116,20 @@ public class IndexHtmlInjectionMiddleware
             return;
         }
 
+        // We are about to serve a freshly injected index. Make sure the browser
+        // never substitutes a previously cached copy that predates the plugin (or
+        // a different plugin version) and therefore lacks the inject.js <script>
+        // tag — the visible symptom is a "disappearing" 2FA menu link that only
+        // returns in a private window. Drop the static validators so a conditional
+        // request can't 304 the browser back to a stale, un-injected shell, and
+        // mark the shell non-cacheable. The index is tiny, so re-fetching it on
+        // each load is negligible.
+        context.Response.Headers.Remove("ETag");
+        context.Response.Headers.Remove("Last-Modified");
+        context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+        context.Response.Headers.Pragma = "no-cache";
+        context.Response.Headers.Expires = "0";
+
         try
         {
             var upstream = buffer.ToArray();

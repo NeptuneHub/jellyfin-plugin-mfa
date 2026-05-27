@@ -1140,11 +1140,27 @@ public class TwoFactorAuthController : ControllerBase
     // Recovery codes
     // -------------------------------------------------------------------------
 
+    /// <summary>Generate (or rotate) recovery codes. Requires a valid current
+    /// second factor (TOTP or recovery code) — same as <see cref="DisableTotp"/> —
+    /// so that a stolen session token alone cannot rotate the codes and harvest a
+    /// fresh, usable set. Rotating wipes the previous codes.</summary>
     [HttpPost("RecoveryCodes/Generate")]
     [Authorize]
-    public async Task<IActionResult> GenerateRecoveryCodes()
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    public async Task<IActionResult> GenerateRecoveryCodes([FromBody] GenerateRecoveryCodesRequest? request)
     {
         var userId = GetCurrentUserId();
+        var clientIp = ClientIp();
+        var code = request?.Code ?? string.Empty;
+
+        if (FieldTooLong(code))
+        {
+            return BadRequest(new { message = "Field too long." });
+        }
+
         var userData = await _store.GetUserDataAsync(userId).ConfigureAwait(false);
 
         if (!userData.TotpEnabled || !userData.TotpVerified)
@@ -1152,15 +1168,92 @@ public class TwoFactorAuthController : ControllerBase
             return BadRequest(new { message = "Set up TOTP first before generating recovery codes." });
         }
 
+        if (await _store.IsLockedOutAsync(userId).ConfigureAwait(false))
+        {
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = "Account is locked out. Try again later." });
+        }
+
+        // Per-user rate limit so a stolen token can't brute the code space here.
+        var rl = _rateLimiter.CheckAndRecord("genrecovery_user:" + userId.ToString("N"), 10, TimeSpan.FromMinutes(5));
+        if (!rl.allowed)
+        {
+            Response.Headers.Append("Retry-After", rl.retryAfterSeconds.ToString(CultureInfo.InvariantCulture));
+            return StatusCode(StatusCodes.Status429TooManyRequests, new
+            {
+                message = $"Too many attempts. Try again in {rl.retryAfterSeconds} seconds.",
+            });
+        }
+
+        if (string.IsNullOrEmpty(code))
+        {
+            return Unauthorized(new { message = "A current authenticator or recovery code is required to regenerate recovery codes." });
+        }
+
+        // Accept either a recovery code or a live TOTP code — same matching rules
+        // as the sign-in / disable paths.
+        var valid = false;
+        var maybeRecovery = code.Replace("-", string.Empty).Replace(" ", string.Empty);
+        if (maybeRecovery.Length >= 8 && maybeRecovery.All(char.IsLetterOrDigit))
+        {
+            valid = FindRecoveryCodeIndex(userData, code) >= 0;
+        }
+
+        if (!valid && code.Length == 6 && code.All(char.IsDigit)
+            && !string.IsNullOrEmpty(userData.EncryptedTotpSecret))
+        {
+            string secret;
+            try
+            {
+                secret = _totpService.DecryptSecret(userData.EncryptedTotpSecret, userId);
+            }
+            catch
+            {
+                return StatusCode(500, new { message = "TOTP secret is corrupted. Ask an administrator to reset your 2FA." });
+            }
+
+            valid = _totpService.ValidateCode(secret, code, userId.ToString(), userData.LastUsedTotpStep, out _);
+        }
+
+        if (!valid)
+        {
+            await _store.RecordFailedAttemptAsync(userId).ConfigureAwait(false);
+            await _store.AddAuditEntryAsync(new AuditEntry
+            {
+                Timestamp = DateTime.UtcNow,
+                UserId = userId,
+                Username = _userManager.GetUserById(userId)?.Username ?? userId.ToString(),
+                RemoteIp = clientIp,
+                Result = AuditResult.Failed,
+                Method = "recovery_regen",
+            }).ConfigureAwait(false);
+            return Unauthorized(new { message = "Invalid code." });
+        }
+
+        var now = DateTime.UtcNow;
         var (plaintext, records) = _recoveryCodes.GenerateCodes();
-        userData.RecoveryCodes = records;
-        userData.RecoveryCodesGeneratedAt = DateTime.UtcNow;
-        await _store.SaveUserDataAsync(userData).ConfigureAwait(false);
+        await _store.MutateAsync(userId, ud =>
+        {
+            ud.RecoveryCodes = records;
+            ud.RecoveryCodesGeneratedAt = now;
+        }).ConfigureAwait(false);
+
+        await _store.ResetFailedAttemptsAsync(userId).ConfigureAwait(false);
+        _rateLimiter.Reset("genrecovery_user:" + userId.ToString("N"));
+
+        await _store.AddAuditEntryAsync(new AuditEntry
+        {
+            Timestamp = DateTime.UtcNow,
+            UserId = userId,
+            Username = _userManager.GetUserById(userId)?.Username ?? userId.ToString(),
+            RemoteIp = clientIp,
+            Result = AuditResult.ConfigChanged,
+            Method = "recovery_regen",
+        }).ConfigureAwait(false);
 
         return Ok(new
         {
             codes = plaintext,
-            generatedAt = userData.RecoveryCodesGeneratedAt,
+            generatedAt = now,
             warning = "These codes are shown ONCE. Save them in a password manager. Each code works for one login.",
         });
     }

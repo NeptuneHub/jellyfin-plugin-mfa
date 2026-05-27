@@ -83,6 +83,8 @@
                 <h2>Recovery codes</h2>
                 <p class="muted" id="recoveryStatus"></p>
                 <div class="codes" id="codesBox"><div class="grid" id="codesGrid"></div></div>
+                <label for="recoveryCode">Confirm with a current 6-digit code (or a recovery code)</label>
+                <input type="text" id="recoveryCode" class="code-input" maxlength="14" inputmode="numeric" placeholder="000000" autocomplete="one-time-code" />
                 <button id="btnGenerate" class="secondary">Generate new recovery codes</button>
             </div>
 
@@ -212,19 +214,36 @@
             }).catch(function() { btn.disabled = false; btn.textContent = 'Confirm & enable'; showError('Network error.'); });
         });
 
+        document.getElementById('recoveryCode').addEventListener('input', function(e) {
+            // Allow digits for TOTP and A–Z/0–9/'-' for recovery codes.
+            e.target.value = e.target.value.replace(/[^0-9A-Za-z-]/g, '').slice(0, 14);
+        });
+
         document.getElementById('btnGenerate').addEventListener('click', function() {
+            var code = document.getElementById('recoveryCode').value.trim();
+            if (!code) { showError('Enter a current authenticator or recovery code to confirm.'); return; }
             if (!confirm('Generate a new set of recovery codes? Any previously generated codes will stop working.')) return;
             clearMsg();
             var btn = this; btn.disabled = true; btn.textContent = 'Generating…';
-            fetch('/Mfa/RecoveryCodes/Generate', { method: 'POST', headers: authHeaders() })
-                .then(function(r) { if (!r.ok) throw new Error(); return r.json(); })
+            fetch('/Mfa/RecoveryCodes/Generate', {
+                method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ code: code })
+            })
+                .then(function(r) {
+                    if (r.status === 401) { btn.disabled = false; btn.textContent = 'Generate new recovery codes'; showError('Invalid code. Enter a current authenticator or recovery code.'); return null; }
+                    if (r.status === 429) { btn.disabled = false; btn.textContent = 'Generate new recovery codes'; showError('Too many attempts. Try again later.'); return null; }
+                    if (!r.ok) throw new Error();
+                    return r.json();
+                })
                 .then(function(res) {
+                    if (!res) return;
                     var grid = document.getElementById('codesGrid');
                     grid.innerHTML = '';
                     (res.codes || []).forEach(function(c) {
                         var d = document.createElement('div'); d.textContent = c; grid.appendChild(d);
                     });
                     document.getElementById('codesBox').classList.add('show');
+                    document.getElementById('recoveryCode').value = '';
                     btn.disabled = false; btn.textContent = 'Generate new recovery codes';
                     showOk('Save these codes now — they are shown only once.');
                     loadRecoveryStatus();

@@ -22,6 +22,15 @@ public class DisableTotpRequest
     public string Code { get; set; } = string.Empty;
 }
 
+/// <summary>Regenerating recovery codes invalidates the old set and reveals a
+/// fresh one, so it requires re-proving possession of the current second factor
+/// (TOTP code or recovery code) — a stolen session alone must not be able to
+/// rotate and harvest recovery codes.</summary>
+public class GenerateRecoveryCodesRequest
+{
+    public string Code { get; set; } = string.Empty;
+}
+
 public class ChallengeTokenRequest
 {
     public string ChallengeToken { get; set; } = string.Empty;
