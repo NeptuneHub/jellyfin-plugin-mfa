@@ -1,11 +1,7 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.IO;
-using System.Runtime.Versioning;
-using System.Security.AccessControl;
 using System.Security.Cryptography;
-using System.Security.Principal;
 using System.Text;
 using MediaBrowser.Common.Configuration;
 using Microsoft.Extensions.Logging;
@@ -31,92 +27,13 @@ public class TotpService
     /// <summary>
     /// Loads a persistent 32-byte AES key from the plugin data directory, creating one if needed.
     /// This survives Jellyfin restarts so encrypted TOTP secrets remain decryptable.
-    /// File permissions are locked down on every load: Unix chmod 0600; Windows
-    /// an explicit DACL granting only the running account + SYSTEM + Administrators,
-    /// with inheritance disabled, so a non-admin local user can't read the key.
+    /// Permission-locking and creation are delegated to <see cref="KeyFileStore"/>.
     /// </summary>
     private byte[] LoadOrCreateKey(IApplicationPaths applicationPaths)
     {
         var pluginDir = Path.Combine(applicationPaths.PluginConfigurationsPath, "TwoFactorAuth");
-        Directory.CreateDirectory(pluginDir);
         var keyPath = Path.Combine(pluginDir, "secret.key");
-
-        if (File.Exists(keyPath))
-        {
-            try
-            {
-                var bytes = File.ReadAllBytes(keyPath);
-                if (bytes.Length == 32)
-                {
-                    // Reapply restrictive perms on every load. A file created by
-                    // an older plugin version, restored from a backup, or copied
-                    // by the admin may have lax perms. Cheap and idempotent.
-                    RestrictKeyFilePermissions(keyPath);
-                    return bytes;
-                }
-                _logger.LogWarning("Existing secret.key is not 32 bytes — regenerating");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to read existing secret.key — regenerating");
-            }
-        }
-
-        var key = RandomNumberGenerator.GetBytes(32);
-        File.WriteAllBytes(keyPath, key);
-        RestrictKeyFilePermissions(keyPath);
-
-        _logger.LogInformation("Generated new persistent encryption key at {Path}", keyPath);
-        return key;
-    }
-
-    private void RestrictKeyFilePermissions(string path)
-    {
-        try
-        {
-            if (OperatingSystem.IsWindows())
-            {
-                RestrictKeyFilePermissionsWindows(path);
-            }
-            else
-            {
-                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            }
-        }
-        catch (Exception ex)
-        {
-            // Best effort — never fail startup over an ACL tweak, but surface it
-            // so an admin can harden a multi-user host manually if needed.
-            _logger.LogWarning(ex, "[2FA] Could not restrict permissions on {Path}; ensure the plugin data dir is readable only by the Jellyfin service account", path);
-        }
-    }
-
-    [SupportedOSPlatform("windows")]
-    private static void RestrictKeyFilePermissionsWindows(string path)
-    {
-        var fileInfo = new FileInfo(path);
-        var security = new FileSecurity();
-
-        // Disable inheritance and drop any inherited ACEs so only the explicit
-        // grants below apply.
-        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-
-        var grantees = new List<IdentityReference>();
-        var current = WindowsIdentity.GetCurrent().User;
-        if (current is not null)
-        {
-            grantees.Add(current);
-        }
-        grantees.Add(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
-        grantees.Add(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null));
-
-        foreach (var who in grantees)
-        {
-            security.AddAccessRule(new FileSystemAccessRule(
-                who, FileSystemRights.FullControl, AccessControlType.Allow));
-        }
-
-        fileInfo.SetAccessControl(security);
+        return KeyFileStore.LoadOrCreate(keyPath, 32, _logger);
     }
 
     public (string secret, string qrCodeBase64, string manualEntryKey) GenerateSecret(string username)

@@ -45,7 +45,21 @@ public class ChallengeData
     internal bool TryConsume()
         => System.Threading.Interlocked.CompareExchange(ref _consumed, 1, 0) == 0;
 
-    public int AttemptCount { get; set; }
+    // SEC S7: atomic so concurrent /Verify (or enrollment-confirm) calls can't
+    // lose an increment and slip past the per-challenge attempt cap. Mirrors the
+    // _consumed pattern above.
+    private int _attemptCount;
+
+    public int AttemptCount
+    {
+        get => System.Threading.Volatile.Read(ref _attemptCount);
+        set => System.Threading.Volatile.Write(ref _attemptCount, value);
+    }
+
+    /// <summary>Atomically increment the failed-attempt counter and return the
+    /// new value.</summary>
+    internal int IncrementAttempts()
+        => System.Threading.Interlocked.Increment(ref _attemptCount);
 
     public string? PendingAuthResponse { get; set; }
 }

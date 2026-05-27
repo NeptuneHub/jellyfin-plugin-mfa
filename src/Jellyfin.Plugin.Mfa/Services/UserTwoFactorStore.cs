@@ -26,6 +26,12 @@ public class UserTwoFactorStore : IDisposable
     private readonly string _usersPath;
     private readonly string _auditFilePath;
 
+    // SEC S6: key for the audit-log HMAC chain. Kept in a SEPARATE file from the
+    // TOTP encryption key (key separation) and locked down to the service account.
+    // HMAC (not bare SHA-256) means a tamperer who can write audit.json but cannot
+    // read this key can no longer silently recompute a valid chain.
+    private readonly byte[] _auditKey;
+
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _userLocks = new();
     private readonly SemaphoreSlim _auditLock = new(1, 1);
 
@@ -52,6 +58,8 @@ public class UserTwoFactorStore : IDisposable
         _auditFilePath = Path.Combine(_dataPath, "audit.json");
 
         Directory.CreateDirectory(_usersPath);
+
+        _auditKey = KeyFileStore.LoadOrCreate(Path.Combine(_dataPath, "audit.key"), 32);
 
         _auditFlushTimer = new Timer(_ => _ = FlushAuditAsync(),
             null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
@@ -256,12 +264,16 @@ public class UserTwoFactorStore : IDisposable
         }
     }
 
-    /// <summary>Canonical hash for audit entries. Includes every persisted field
-    /// EXCEPT EntryHash itself (otherwise the value would depend on itself).
-    /// PreviousHash IS included so tampering with one entry cascades.</summary>
-    internal static string ComputeAuditEntryHash(AuditEntry e)
+    /// <summary>Canonical, keyed hash for audit entries. Includes every persisted
+    /// field EXCEPT EntryHash itself (otherwise the value would depend on itself).
+    /// PreviousHash IS included so tampering with one entry cascades. SEC S6: this
+    /// is an HMAC-SHA256 keyed with <see cref="_auditKey"/> (the leading "v2" tag
+    /// distinguishes keyed entries from legacy unkeyed SHA-256 ones), so the chain
+    /// cannot be silently recomputed without the key.</summary>
+    internal string ComputeAuditEntryHash(AuditEntry e)
     {
         var canonical = string.Join("\x1F",
+            "v2",
             e.PreviousHash,
             e.Timestamp.ToUniversalTime().ToString("O", System.Globalization.CultureInfo.InvariantCulture),
             e.UserId.ToString("N"),
@@ -273,7 +285,7 @@ public class UserTwoFactorStore : IDisposable
             e.Method ?? string.Empty,
             e.Details ?? string.Empty);
         var bytes = System.Text.Encoding.UTF8.GetBytes(canonical);
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
+        return Convert.ToHexString(System.Security.Cryptography.HMACSHA256.HashData(_auditKey, bytes));
     }
 
     public async Task<IReadOnlyList<AuditEntry>> GetAuditLogAsync(int? limit = null)

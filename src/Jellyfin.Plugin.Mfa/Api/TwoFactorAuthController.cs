@@ -78,6 +78,17 @@ public class TwoFactorAuthController : ControllerBase
 
     private string ClientIp() => HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
+    // SEC S4: a submitted code is at most 6 chars (TOTP) or ~14 (recovery), and a
+    // challenge token is ~43 chars (base64url of 32 bytes). Reject anything wildly
+    // longer before it reaches PBKDF2 (recovery verify hashes the input once per
+    // stored code) so an oversized body can't amplify into CPU.
+    private const int MaxCodeLength = 64;
+    private const int MaxTokenLength = 128;
+
+    private static bool FieldTooLong(string? code, string? token = null)
+        => (code is not null && code.Length > MaxCodeLength)
+            || (token is not null && token.Length > MaxTokenLength);
+
     private bool IsAdmin(Guid userId)
     {
         try
@@ -282,6 +293,11 @@ public class TwoFactorAuthController : ControllerBase
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> ConfirmForcedTotpEnrollment([FromBody, Required] ForcedEnrollmentConfirmRequest request)
     {
+        if (FieldTooLong(request.Code, request.ChallengeToken))
+        {
+            return BadRequest(new { message = "Field too long." });
+        }
+
         var clientIp = ClientIp();
         var challenge = _challengeStore.GetChallenge(request.ChallengeToken);
         if (challenge is null || !challenge.EnrollmentRequired)
@@ -325,7 +341,7 @@ public class TwoFactorAuthController : ControllerBase
             secret, request.Code, challenge.UserId.ToString(), persistedFloor: 0, out var acceptedStep);
         if (!valid)
         {
-            challenge.AttemptCount++;
+            challenge.IncrementAttempts();
             await _store.RecordFailedAttemptAsync(challenge.UserId).ConfigureAwait(false);
             return Unauthorized(new { message = "Invalid authenticator code." });
         }
@@ -434,15 +450,47 @@ public class TwoFactorAuthController : ControllerBase
 
             var codeConsumedRecovery = false;
 
-            // --- Step 1: if the user has 2FA, verify the code FIRST. Identical
-            // "invalid credentials" responses regardless of which part failed,
-            // to avoid enumerating which accounts have 2FA enabled. ---
+            // SEC S1: one identical response for every credential failure (wrong
+            // password, missing code, wrong code) so neither the wording nor the
+            // timing reveals whether an account has 2FA enabled.
+            const string uniformFailMessage = "Invalid username, password, or verification code.";
+
+            // --- Step 1: verify the PASSWORD first, WITHOUT minting a session.
+            // AuthenticateUser runs Jellyfin's PBKDF2 for every existing user
+            // regardless of 2FA state, closing the timing side-channel that
+            // otherwise let an attacker distinguish 2FA from non-2FA accounts
+            // (SEC S1). The session/token is only minted later, by
+            // AuthenticateNewSession, after the code is verified — preserving the
+            // "no usable token until 2FA passes" invariant. ---
+            bool passwordValid;
+            try
+            {
+                var authedUser = await _userManager
+                    .AuthenticateUser(req.Username, req.Password, clientIp, isUserSession: true)
+                    .ConfigureAwait(false);
+                passwordValid = authedUser is not null;
+            }
+            catch (MediaBrowser.Controller.Authentication.AuthenticationException)
+            {
+                passwordValid = false;
+            }
+
+            if (!passwordValid)
+            {
+                await _store.RecordFailedAttemptAsync(user.Id).ConfigureAwait(false);
+                return Unauthorized(new { message = uniformFailMessage });
+            }
+
+            // --- Step 2: password is correct. If the user has 2FA, verify the
+            // code now. The recovery code is consumed ONLY here, after the
+            // password is proven, so an attacker holding a recovery code but not
+            // the password can no longer burn the victim's codes (SEC S2). ---
             if (totpEnabled)
             {
                 if (string.IsNullOrEmpty(req.Code))
                 {
                     await _store.RecordFailedAttemptAsync(user.Id).ConfigureAwait(false);
-                    return Unauthorized(new { message = "Invalid username, password, or verification code." });
+                    return Unauthorized(new { message = uniformFailMessage });
                 }
 
                 bool codeValid = false;
@@ -453,8 +501,6 @@ public class TwoFactorAuthController : ControllerBase
                     var idx = FindRecoveryCodeIndex(userData, req.Code);
                     if (idx >= 0)
                     {
-                        // Mark used immediately so a stolen recovery code can't be
-                        // retried even if the password check fails afterwards.
                         userData.RecoveryCodes[idx].Used = true;
                         userData.RecoveryCodes[idx].UsedAt = DateTime.UtcNow;
                         await _store.SaveUserDataAsync(userData).ConfigureAwait(false);
@@ -504,11 +550,11 @@ public class TwoFactorAuthController : ControllerBase
                         Result = AuditResult.Failed,
                         Method = "totp",
                     }).ConfigureAwait(false);
-                    return Unauthorized(new { message = "Invalid username, password, or verification code." });
+                    return Unauthorized(new { message = uniformFailMessage });
                 }
             }
 
-            // --- Step 2: verify password with Jellyfin. ---
+            // --- Step 3: credentials fully verified — mint the Jellyfin session. ---
             var deviceId = HttpContext.Request.Headers["X-Emby-Device-Id"].FirstOrDefault()
                 ?? Guid.NewGuid().ToString("N");
             var deviceName = HttpContext.Request.Headers["X-Emby-Device-Name"].FirstOrDefault()
@@ -544,7 +590,10 @@ public class TwoFactorAuthController : ControllerBase
                 }
                 catch (MediaBrowser.Controller.Authentication.AuthenticationException)
                 {
-                    return Unauthorized(new { message = "Invalid username or password." });
+                    // Password was already verified in Step 1; reaching here is a
+                    // rare race (e.g. user disabled between calls). Keep the
+                    // uniform message so nothing is leaked.
+                    return Unauthorized(new { message = uniformFailMessage });
                 }
             }
             finally
@@ -641,6 +690,11 @@ public class TwoFactorAuthController : ControllerBase
     [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<VerifyResponse>> Verify([FromBody, Required] VerifyRequest request)
     {
+        if (FieldTooLong(request.Code, request.ChallengeToken))
+        {
+            return BadRequest(new { message = "Field too long." });
+        }
+
         var clientIp = ClientIp();
         var rl = _rateLimiter.CheckAndRecord("verify:" + clientIp, 10, TimeSpan.FromMinutes(1));
         if (!rl.allowed)
@@ -702,7 +756,7 @@ public class TwoFactorAuthController : ControllerBase
         {
             if (string.IsNullOrEmpty(userData.EncryptedTotpSecret))
             {
-                challenge.AttemptCount++;
+                challenge.IncrementAttempts();
                 await _store.RecordFailedAttemptAsync(challenge.UserId).ConfigureAwait(false);
                 return Unauthorized(new { message = "No TOTP secret configured." });
             }
@@ -733,7 +787,7 @@ public class TwoFactorAuthController : ControllerBase
 
         if (!valid)
         {
-            challenge.AttemptCount++;
+            challenge.IncrementAttempts();
             await _store.RecordFailedAttemptAsync(challenge.UserId).ConfigureAwait(false);
             await _store.AddAuditEntryAsync(new AuditEntry
             {
@@ -825,6 +879,11 @@ public class TwoFactorAuthController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult> ConfirmTotp([FromBody, Required] ConfirmTotpRequest request)
     {
+        if (FieldTooLong(request.Code))
+        {
+            return BadRequest("Field too long.");
+        }
+
         var userId = GetCurrentUserId();
         var userData = await _store.GetUserDataAsync(userId).ConfigureAwait(false);
 

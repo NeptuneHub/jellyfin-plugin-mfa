@@ -209,4 +209,44 @@ public class ChallengeStoreTests
         store.MarkTokenVerified(token);
         Assert.True(store.IsTokenVerified(token));
     }
+
+    // ---- S7: atomic attempt counter ---------------------------------------
+
+    [Fact]
+    public void IncrementAttempts_returns_incrementing_values()
+    {
+        var data = new ChallengeData { Token = "any", UserId = Guid.NewGuid() };
+
+        Assert.Equal(0, data.AttemptCount);
+        Assert.Equal(1, data.IncrementAttempts());
+        Assert.Equal(2, data.IncrementAttempts());
+        Assert.Equal(2, data.AttemptCount);
+    }
+
+    [Fact]
+    public async Task IncrementAttempts_is_thread_safe_no_lost_updates()
+    {
+        // SEC S7: a plain AttemptCount++ could lose increments under concurrent
+        // /Verify calls, letting an attacker exceed the per-challenge cap. The
+        // atomic increment must count every caller exactly once.
+        for (var trial = 0; trial < 20; trial++)
+        {
+            var data = new ChallengeData { Token = "any", UserId = Guid.NewGuid() };
+
+            const int parallelism = 64;
+            var tasks = new Task[parallelism];
+            using var gate = new System.Threading.Barrier(parallelism);
+            for (var i = 0; i < parallelism; i++)
+            {
+                tasks[i] = Task.Run(() =>
+                {
+                    gate.SignalAndWait();
+                    data.IncrementAttempts();
+                });
+            }
+
+            await Task.WhenAll(tasks);
+            Assert.Equal(parallelism, data.AttemptCount);
+        }
+    }
 }
