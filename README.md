@@ -44,6 +44,34 @@ The plugin does not trust `X-Forwarded-For` on its own. If Jellyfin runs behind 
 configure Jellyfin's known-proxies / forwarded-headers settings so rate limiting sees the real
 client address.
 
+## Crypto Information
+
+Every cryptographic primitive used by the plugin, mapped to the relevant NIST standard. All random
+values come from the OS CSPRNG (`RandomNumberGenerator`); no insecure `System.Random` is used
+anywhere, and there is no MD5, SHA-1 outside the RFC-mandated TOTP, DES/3DES/RC4, ECB mode, or
+static IV/nonce.
+
+| Where used | Algorithm | NIST standard | Quantum-safe? | Status |
+|---|---|---|---|---|
+| TOTP secret at rest | AES-256-GCM (256-bit key, 96-bit random nonce, 128-bit tag), AAD-bound to user id | FIPS 197 + SP 800-38D | Yes (AES-256) | Maximum — no stronger option |
+| TOTP code generation | HMAC-SHA1, 6 digits, 30 s (RFC 6238 default) | SP 800-63B (TOTP); HMAC-SHA1 allowed by SP 800-107 | Yes (symmetric) | Kept for authenticator-app compatibility; HMAC-SHA1 is not broken (SHA-1 collisions don't affect HMAC) |
+| Recovery codes at rest | PBKDF2-HMAC-SHA256, 100k iterations, 128-bit salt | SP 800-132 | Yes | Sufficient — codes are high-entropy (~49 bits) and verification loops all codes, so higher iteration counts add latency/DoS, not security |
+| Audit-log hash chain | HMAC-SHA256, separate keyed file | FIPS 198-1 + 180-4 | Yes | Strong — tamper-evident |
+| Access-token verification (trusted sessions) | SHA-256 + constant-time compare (`FixedTimeEquals`), device-bound | FIPS 180-4 | Yes (256-bit) | Correct for a high-entropy token; only the hash is stored, never the token |
+| Keys, salts, nonces, challenge tokens | 256-bit random via OS CSPRNG | SP 800-90A | n/a | Maximum-practical |
+| Key establishment / digital signatures (asymmetric) | none used | ML-KEM / ML-DSA (FIPS 203 / 204) | — | Not applicable — no asymmetric crypto to migrate |
+
+**Post-quantum note.** NIST's PQC standards — **ML-KEM** (FIPS 203), **ML-DSA** (FIPS 204) and
+**SLH-DSA** (FIPS 205) — replace *asymmetric* algorithms (RSA, ECDSA, ECDH), the only ones broken by
+Shor's algorithm. This plugin uses **no asymmetric cryptography**, so there is nothing to migrate.
+Its symmetric ciphers and hashes are only marginally affected by Grover's algorithm, and at
+256-bit (AES-256, SHA-256/HMAC-SHA256) are already considered quantum-resistant per NISTIR 8105.
+Post-quantum key exchange, where it eventually matters, lives in the **TLS transport** handled by
+Jellyfin / your reverse proxy — outside this plugin.
+
+This is a source-level mapping to published standards, not a formal FIPS validation or third-party
+cryptographic audit.
+
 ## Build locally
 
 Requires the .NET SDK 8.0.
