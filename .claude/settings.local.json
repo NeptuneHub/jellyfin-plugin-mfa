@@ -15,7 +15,14 @@
       "PowerShell($d = Get-Command dotnet -ErrorAction SilentlyContinue; if \\($d\\) { $d.Source; & dotnet --version } else { \"dotnet not on PATH\"; Test-Path \"C:\\\\Program Files\\\\dotnet\\\\dotnet.exe\" })",
       "Bash(git check-ignore *)",
       "WebFetch(domain:github.com)",
-      "Bash(git fetch *)"
+      "Bash(git fetch *)",
+      "Bash(git mv *)",
+      "PowerShell($dotnet = \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\"; if \\(-not \\(Test-Path $dotnet\\)\\) { $dotnet = \"dotnet\" }; & $dotnet build src\\\\Jellyfin.Plugin.Mfa\\\\Jellyfin.Plugin.Mfa.csproj -c Release 2>&1 | Select-Object -Last 25)",
+      "PowerShell(\"--- any tests dir? ---\")",
+      "PowerShell($dotnet = \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\"; & $dotnet test \"C:\\\\Users\\\\gcola\\\\Music\\\\jellyfin-plugin-mfa\\\\tests\\\\Jellyfin.Plugin.Mfa.Tests\\\\Jellyfin.Plugin.Mfa.Tests.csproj\" -c Release 2>&1 | Select-Object -Last 12)",
+      "PowerShell($dotnet = \"$env:USERPROFILE\\\\.dotnet\\\\dotnet.exe\"; & $dotnet build \"Jellyfin.Plugin.Mfa.csproj\" -c Release 2>&1 | Select-Object -Last 6)",
+      "Bash(powershell.exe -NoProfile -Command \"[guid]::NewGuid\\(\\).ToString\\(\\)\")",
+      "Bash(echo \"NEW_GUID=$\\(powershell.exe -NoProfile -Command \"[guid]::NewGuid\\(\\).ToString\\(\\)\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\gcola\\.claude\\plans"

@@ -4,8 +4,8 @@ param(
     [switch]$Install
 )
 
-$ProjectDir = "$PSScriptRoot\src\Jellyfin.Plugin.TwoFactorAuth"
-$OutputDir = "$PSScriptRoot\dist\TwoFactorAuth"
+$ProjectDir = "$PSScriptRoot\src\Jellyfin.Plugin.Mfa"
+$OutputDir = "$PSScriptRoot\dist\Jellyfin.Plugin.Mfa"
 
 if (Test-Path $OutputDir) { Remove-Item -Recurse -Force $OutputDir }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
@@ -16,7 +16,7 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 
 # The plugin has no native dependencies — just the managed plugin + its two NuGet deps.
 $RequiredFiles = @(
-    "Jellyfin.Plugin.TwoFactorAuth.dll",
+    "Jellyfin.Plugin.Mfa.dll",
     "Otp.NET.dll",
     "QRCoder.dll"
 )
@@ -34,7 +34,7 @@ Write-Host "`nPlugin built to: $OutputDir" -ForegroundColor Green
 Get-ChildItem $OutputDir | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
 
 if ($Install) {
-    $JellyfinPlugins = "$env:LOCALAPPDATA\jellyfin\plugins\TwoFactorAuth"
+    $JellyfinPlugins = "$env:LOCALAPPDATA\jellyfin\plugins\Jellyfin.Plugin.Mfa"
     if (Test-Path $JellyfinPlugins) { Remove-Item -Recurse -Force $JellyfinPlugins }
     Copy-Item -Recurse $OutputDir $JellyfinPlugins
     Write-Host "`nInstalled to: $JellyfinPlugins" -ForegroundColor Green

@@ -1,7 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: "nuget"
-    directory: "/src/Jellyfin.Plugin.TwoFactorAuth"
+    directory: "/src/Jellyfin.Plugin.Mfa"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -29,7 +29,7 @@ updates:
       - dependency-name: "Jellyfin.Model"
 
   - package-ecosystem: "nuget"
-    directory: "/tests/Jellyfin.Plugin.TwoFactorAuth.Tests"
+    directory: "/tests/Jellyfin.Plugin.Mfa.Tests"
     schedule:
       interval: "weekly"
       day: "monday"

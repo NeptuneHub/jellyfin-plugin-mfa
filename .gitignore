@@ -6,4 +6,4 @@ dist/
 .vs/
 *.nupkg
 publish/
-Jellyfin.Plugin.TwoFactorAuth*.zip
+Jellyfin.Plugin.Mfa*.zip

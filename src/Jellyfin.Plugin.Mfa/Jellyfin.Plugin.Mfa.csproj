@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Jellyfin.Plugin.Mfa</RootNamespace>
+    <AssemblyName>Jellyfin.Plugin.Mfa</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Version>1.0.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AnalysisMode>Recommended</AnalysisMode>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <!-- Treat warnings as errors so regressions can't ship silently. The
+         .editorconfig at repo root silences pure perf-only rules with
+         documented justifications. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Lock every transitive NuGet by hash so dotnet restore is reproducible.
+         CI uses locked mode so any drift between the lock file and csproj fails
+         fast. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Jellyfin.Plugin.Mfa.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Otp.NET" Version="1.4.1" />
+    <PackageReference Include="QRCoder" Version="1.8.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.300">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pinned to 10.10.6 (the latest 10.10.x on NuGet). The plugin targets
+         ABI 10.10.0.0 (see meta.json) and loads on any Jellyfin 10.10.x server,
+         including 10.10.7. Bumping is a deliberate change that requires
+         re-verifying the plugin compiles and behaves against the new ABI. -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.10.6" />
+    <PackageReference Include="Jellyfin.Model" Version="10.10.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Pages\**\*" />
+  </ItemGroup>
+
+</Project>
