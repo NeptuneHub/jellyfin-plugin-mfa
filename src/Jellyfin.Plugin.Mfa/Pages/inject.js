@@ -2,7 +2,7 @@
     if (window.__twofactor_injected) return;
     window.__twofactor_injected = true;
 
-    console.log('[2FA] inject.js v3.2.1 loaded');
+    console.log('[2FA] inject.js v3.3.0 loaded');
 
     // ============================================================
     // 1a. TFA-pending sessionStorage flag + client-side short-circuit.
@@ -72,7 +72,6 @@
             || u.indexOf('/mfa/authenticate') >= 0;
     }
 
-    var BUTTON_ID = '__twofactor_login_btn';
     var STYLE_ID = '__twofactor_styles';
     var SIDEBAR_ID = '__twofactor_sidebar';
     var SETTINGS_TILE_ID = '__twofactor_settings_tile';
@@ -551,58 +550,228 @@
     }
 
     // ============================================================
-    // 3. Login-form button — "Sign in with Two-Factor Authentication".
+    // 3. Native login form — inject a "2FA code" field and reroute the
+    //    submit through /Mfa/Authenticate, so the standard Jellyfin web
+    //    login page is the ONE login page (username + password + code).
+    //    Third-party clients never load this script and are unaffected.
     // ============================================================
 
+    var CODE_FIELD_ID = '__mfa_code_field';
+    var CODE_ERROR_ID = '__mfa_login_error';
+
+    function isLoginPage() {
+        var hash = window.location.hash || '';
+        return hash.indexOf('login') >= 0 || hash === '' || hash === '#';
+    }
+    function getLoginUsernameInput() {
+        return document.querySelector('input#txtManualName, .manualLoginForm input[type="text"], input[name="username"], input#username');
+    }
+    function getLoginPasswordInput() {
+        return document.querySelector('input#txtManualPassword, .manualLoginForm input[type="password"], input[name="password"], input#password');
+    }
     function addStyles() {
         if (document.getElementById(STYLE_ID)) return;
         var style = document.createElement('style');
         style.id = STYLE_ID;
         style.textContent =
-            '#' + BUTTON_ID + ' {' +
-                'display:block;box-sizing:border-box;width:100%;' +
-                'padding:0.9em 1em;margin-top:0.5em;' +
-                'background:transparent;color:inherit;' +
-                'border:1px solid rgba(255,255,255,0.2);border-radius:0.2em;' +
-                'font-family:inherit;font-size:inherit;font-weight:inherit;line-height:inherit;letter-spacing:inherit;' +
-                'text-transform:inherit;text-decoration:none;text-align:center;' +
-                'cursor:pointer;-webkit-appearance:none;appearance:none;' +
-                'transition:background-color 0.15s ease;' +
-            '}' +
-            '#' + BUTTON_ID + ':hover { background:rgba(255,255,255,0.08); }' +
-            '#' + BUTTON_ID + ' .tfa-icon { margin-right:0.4em;vertical-align:middle; }';
+            '#' + CODE_FIELD_ID + ' { letter-spacing:0.3em; }' +
+            '.__mfa-toggle { display:inline-block; margin:2px 0 6px; font-size:0.85em; color:#00a4dc; cursor:pointer; text-decoration:none; }' +
+            '.__mfa-toggle:hover { text-decoration:underline; }' +
+            '#' + CODE_ERROR_ID + ' { color:#f44336; font-size:0.85em; margin:4px 0 8px; display:none; }' +
+            '#' + CODE_ERROR_ID + '.show { display:block; }';
         document.head.appendChild(style);
     }
-    function isLoginPage() {
-        var hash = window.location.hash || '';
-        return hash.indexOf('login') >= 0 || hash === '' || hash === '#';
-    }
-    function findUsername() {
-        var input = document.querySelector('input#txtManualName, input[name="username"], input#username, .manualLoginForm input[type="text"]:not([type="password"])');
-        return input && input.value ? input.value.trim() : '';
-    }
-    function addLoginButton() {
+
+    // Inject the code field + recovery toggle into the manual login form,
+    // styled by cloning the password field's container so it matches the active
+    // theme exactly. Idempotent; re-runs harmlessly via the bootstrap observer.
+    function injectLoginCodeField() {
         if (!isLoginPage()) return;
-        if (document.getElementById(BUTTON_ID)) return;
-        var signInBtn = document.querySelector('.manualLoginForm button[type="submit"], .manualLoginForm .raised, form button[type="submit"]');
-        if (!signInBtn) return;
+        if (document.getElementById(CODE_FIELD_ID)) return;
+        var pw = getLoginPasswordInput();
+        if (!pw) return; // manual form not in the DOM (e.g. avatar picker shown)
         addStyles();
-        var btn = document.createElement('a');
-        btn.id = BUTTON_ID;
-        btn.setAttribute('is', 'emby-linkbutton');
-        btn.className = (signInBtn.className || 'raised block').replace(/button-submit|button-cancel|emby-button/g, '').trim();
-        btn.innerHTML = '<span class="tfa-icon">🔐</span>Sign in with Two-Factor Authentication';
-        btn.href = '/Mfa/Login';
-        function updateHref() {
-            var u = findUsername();
-            btn.href = u ? '/Mfa/Login?username=' + encodeURIComponent(u) : '/Mfa/Login';
+
+        var pwContainer = (pw.closest && pw.closest('.inputContainer')) || pw.parentElement;
+        if (!pwContainer || !pwContainer.parentNode) return;
+
+        var container = pwContainer.cloneNode(true);
+        var input = container.querySelector('input');
+        if (!input) return;
+        input.id = CODE_FIELD_ID;
+        input.setAttribute('type', 'text');
+        input.setAttribute('inputmode', 'numeric');
+        input.setAttribute('autocomplete', 'one-time-code');
+        input.setAttribute('maxlength', '6');
+        input.setAttribute('placeholder', '000000');
+        input.removeAttribute('required');
+        input.removeAttribute('name');
+        input.value = '';
+
+        var lbl = container.querySelector('label');
+        if (lbl) { lbl.removeAttribute('for'); lbl.textContent = "2FA code (leave blank if you haven't set it up)"; }
+        var desc = container.querySelector('.fieldDescription');
+        if (desc && desc.parentNode) desc.parentNode.removeChild(desc);
+
+        var recovery = { on: false };
+        input.addEventListener('input', function () {
+            if (recovery.on) {
+                input.value = input.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 14);
+            } else {
+                input.value = input.value.replace(/\D/g, '').slice(0, 6);
+            }
+        });
+
+        var toggle = document.createElement('a');
+        toggle.className = '__mfa-toggle';
+        toggle.href = '#';
+        toggle.textContent = 'Use a recovery code instead';
+        toggle.addEventListener('click', function (e) {
+            e.preventDefault();
+            recovery.on = !recovery.on;
+            if (recovery.on) {
+                input.setAttribute('maxlength', '14');
+                input.setAttribute('placeholder', 'XXXXX-XXXXX');
+                input.setAttribute('inputmode', 'text');
+                if (lbl) lbl.textContent = 'Recovery code (format: XXXXX-XXXXX)';
+                toggle.textContent = 'Use 6-digit code instead';
+            } else {
+                input.setAttribute('maxlength', '6');
+                input.setAttribute('placeholder', '000000');
+                input.setAttribute('inputmode', 'numeric');
+                if (lbl) lbl.textContent = "2FA code (leave blank if you haven't set it up)";
+                toggle.textContent = 'Use a recovery code instead';
+            }
+            input.value = '';
+            input.focus();
+        });
+
+        var err = document.createElement('div');
+        err.id = CODE_ERROR_ID;
+
+        pwContainer.parentNode.insertBefore(container, pwContainer.nextSibling);
+        container.parentNode.insertBefore(toggle, container.nextSibling);
+        toggle.parentNode.insertBefore(err, toggle.nextSibling);
+    }
+
+    function showLoginError(msg) {
+        var el = document.getElementById(CODE_ERROR_ID);
+        if (el) { el.textContent = msg; el.classList.add('show'); }
+    }
+    function clearLoginError() {
+        var el = document.getElementById(CODE_ERROR_ID);
+        if (el) el.classList.remove('show');
+    }
+
+    // Persist the AccessToken so the SPA loads logged-in after we reload /web.
+    // Ported from login.html's storeCredentials().
+    function storeMfaCredentials(authData) {
+        return fetch('/System/Info/Public').then(function (r) { return r.ok ? r.json() : null; }).then(function (info) {
+            var serverId = authData.ServerId || (info && info.Id) || '';
+            var serverName = (info && info.ServerName) || 'Jellyfin';
+            var serverAddress = window.location.origin;
+            var creds;
+            try { creds = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}'); } catch (e) { creds = {}; }
+            if (!creds.Servers) creds.Servers = [];
+            var existing = creds.Servers.find(function (s) { return s.Id === serverId; });
+            var now = Date.now();
+            if (existing) {
+                existing.AccessToken = authData.AccessToken;
+                existing.UserId = authData.User && authData.User.Id;
+                existing.DateLastAccessed = now;
+                if (!existing.ManualAddress) existing.ManualAddress = serverAddress;
+                if (!existing.Name) existing.Name = serverName;
+            } else {
+                creds.Servers.unshift({
+                    Id: serverId, Name: serverName,
+                    AccessToken: authData.AccessToken,
+                    UserId: authData.User && authData.User.Id,
+                    ManualAddress: serverAddress, DateLastAccessed: now, LastConnectionMode: 1
+                });
+            }
+            localStorage.setItem('jellyfin_credentials', JSON.stringify(creds));
+        }).catch(function () { /* best effort */ });
+    }
+
+    // Run the plugin login flow for a manual web sign-in.
+    function submitMfaLogin(username, password, code, submitBtn) {
+        if (window.__mfa_submitting) return;
+        window.__mfa_submitting = true;
+        clearLoginError();
+        var restore = submitBtn ? submitBtn.innerHTML : null;
+        if (submitBtn) submitBtn.disabled = true;
+
+        function reenable() {
+            window.__mfa_submitting = false;
+            if (submitBtn) { submitBtn.disabled = false; if (restore != null) submitBtn.innerHTML = restore; }
         }
-        btn.addEventListener('click', function (e) { e.preventDefault(); updateHref(); window.location.assign(btn.href); });
-        var userInput = document.querySelector('input#txtManualName, input[name="username"], input#username');
-        if (userInput) ['input', 'change', 'blur'].forEach(function (ev) { userInput.addEventListener(ev, updateHref); });
-        var parent = signInBtn.parentNode;
-        if (signInBtn.nextSibling) parent.insertBefore(btn, signInBtn.nextSibling);
-        else parent.appendChild(btn);
+
+        var deviceId = getStableDeviceId();
+        fetch('/Mfa/Authenticate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Emby-Device-Id': deviceId,
+                'X-Emby-Device-Name': 'Jellyfin Web'
+            },
+            body: JSON.stringify({ username: username, password: password, code: code })
+        }).then(function (r) {
+            if (r.ok) return r.json();
+            return r.json().catch(function () { return { message: 'Sign in failed (' + r.status + ').' }; }).then(function (body) {
+                if (body && (body.TwoFactorRequired || body.twoFactorRequired)) {
+                    // Enrollment required — go enroll, then come back signed in.
+                    var ct = body.ChallengeToken || body.challengeToken || '';
+                    window.location.assign('/Mfa/Challenge?token=' + encodeURIComponent(ct));
+                    return null;
+                }
+                reenable();
+                showLoginError((body && body.message) || 'Sign in failed.');
+                return null;
+            });
+        }).then(function (authData) {
+            if (!authData) return;
+            storeMfaCredentials(authData).then(function () {
+                window.location.assign('/web/index.html');
+            });
+        }).catch(function () {
+            reenable();
+            showLoginError('Network error. Check your connection and try again.');
+        });
+    }
+
+    // Capture-phase interception of the native manual-login submit so it flows
+    // through /Mfa/Authenticate (password + code validated together, token only
+    // minted after). Idempotent; re-wires if the SPA replaced the form node.
+    function wireLoginSubmitInterception() {
+        if (!isLoginPage()) return;
+        var pw = getLoginPasswordInput();
+        if (!pw) return;
+        var form = (pw.closest && pw.closest('form')) || document.querySelector('.manualLoginForm, #loginPage form');
+        var btn = document.querySelector('.manualLoginForm button[type="submit"], #loginPage form button[type="submit"], form button[type="submit"]');
+
+        function handler(e) {
+            // Only intercept once our field exists (confirms this is our manual form).
+            if (!document.getElementById(CODE_FIELD_ID)) return;
+            var userInput = getLoginUsernameInput();
+            var passInput = getLoginPasswordInput();
+            var codeInput = document.getElementById(CODE_FIELD_ID);
+            var username = userInput && userInput.value ? userInput.value.trim() : '';
+            var password = passInput ? passInput.value : '';
+            // Leave empty creds to Jellyfin's own field validation.
+            if (!username || !password) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            submitMfaLogin(username, password, codeInput ? codeInput.value.trim() : '', btn);
+        }
+
+        if (form && !form.__mfaWired) {
+            form.addEventListener('submit', handler, true);
+            form.__mfaWired = true;
+        }
+        if (btn && !btn.__mfaWired) {
+            btn.addEventListener('click', handler, true);
+            btn.__mfaWired = true;
+        }
     }
 
     // ============================================================
@@ -610,7 +779,8 @@
     // ============================================================
 
     function tryInject() {
-        addLoginButton();
+        injectLoginCodeField();
+        wireLoginSubmitInterception();
         injectSidebar();
         injectDashboardNav();
         injectSettingsTile();
