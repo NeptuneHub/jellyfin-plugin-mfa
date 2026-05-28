@@ -255,7 +255,7 @@ public class RequestBlockerMiddleware
             Timestamp = DateTime.UtcNow,
             UserId = user.Id,
             Username = user.Username ?? string.Empty,
-            RemoteIp = context.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+            RemoteIp = ClientIpResolver.Resolve(context, Plugin.Instance?.Configuration?.TrustedProxyCidrs),
             Result = AuditResult.ChallengeIssued,
             Method = "native_blocked",
         }).ConfigureAwait(false);

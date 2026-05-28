@@ -88,6 +88,22 @@
                 <button id="btnGenerate" class="secondary">Generate new recovery codes</button>
             </div>
 
+            <!-- Rotate -->
+            <div class="card hidden" id="rotateCard">
+                <h2>Rotate authenticator secret</h2>
+                <p class="muted">Replace your authenticator's secret without disabling two-factor. Use this if you
+                    suspect the secret has leaked (old phone backup, shared device). You'll be signed out of every
+                    device and must scan the new QR with your authenticator before signing in again. One recovery
+                    code is consumed; the others stay valid.</p>
+                <label for="rotateTotpCode">Current 6-digit code</label>
+                <input type="text" id="rotateTotpCode" class="code-input" maxlength="6" inputmode="numeric" placeholder="000000" autocomplete="one-time-code" />
+                <label for="rotateRecoveryCode">A recovery code</label>
+                <input type="text" id="rotateRecoveryCode" class="code-input" maxlength="14" inputmode="text" autocapitalize="characters" placeholder="XXXXX-XXXXX" autocomplete="off" />
+                <div class="qr-wrap" id="rotateQrWrap"><img id="rotateQrImg" alt="New QR code" /></div>
+                <div class="secret" id="rotateSecretText"></div>
+                <button id="btnRotate" class="danger">Rotate secret &amp; sign out everywhere</button>
+            </div>
+
             <!-- Disable -->
             <div class="card hidden" id="disableCard">
                 <h2>Disable two-factor</h2>
@@ -144,6 +160,7 @@
                         document.getElementById('statusDetail').textContent = 'Two-factor authentication is active on your account.';
                         document.getElementById('enrollCard').classList.add('hidden');
                         document.getElementById('recoveryCard').classList.remove('hidden');
+                        document.getElementById('rotateCard').classList.remove('hidden');
                         document.getElementById('disableCard').classList.remove('hidden');
                         loadRecoveryStatus();
                     } else {
@@ -152,6 +169,7 @@
                         document.getElementById('statusDetail').textContent = 'Protect your account with an authenticator app.';
                         document.getElementById('enrollCard').classList.remove('hidden');
                         document.getElementById('recoveryCard').classList.add('hidden');
+                        document.getElementById('rotateCard').classList.add('hidden');
                         document.getElementById('disableCard').classList.add('hidden');
                     }
                 })
@@ -249,6 +267,43 @@
                     loadRecoveryStatus();
                 })
                 .catch(function() { btn.disabled = false; btn.textContent = 'Generate new recovery codes'; showError('Could not generate codes.'); });
+        });
+
+        document.getElementById('rotateTotpCode').addEventListener('input', function(e) {
+            e.target.value = e.target.value.replace(/\D/g, '').slice(0, 6);
+        });
+        document.getElementById('rotateRecoveryCode').addEventListener('input', function(e) {
+            e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '').slice(0, 14);
+        });
+
+        document.getElementById('btnRotate').addEventListener('click', function() {
+            var totp = document.getElementById('rotateTotpCode').value.trim();
+            var recov = document.getElementById('rotateRecoveryCode').value.trim();
+            if (!/^\d{6}$/.test(totp)) { showError('Enter the 6-digit code.'); return; }
+            if (!recov) { showError('Enter a recovery code.'); return; }
+            if (!confirm('Rotate your authenticator secret? Your current authenticator will stop working immediately and every device will be signed out. The new QR code is shown only once — scan it before leaving this page.')) return;
+            clearMsg();
+            var btn = this; btn.disabled = true; btn.textContent = 'Rotating…';
+            fetch('/Mfa/Setup/Totp/Rotate', {
+                method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ totpCode: totp, recoveryCode: recov })
+            }).then(function(r) {
+                return r.json().catch(function() { return {}; }).then(function(body) { return { ok: r.ok, status: r.status, body: body }; });
+            }).then(function(res) {
+                btn.disabled = false; btn.textContent = 'Rotate secret & sign out everywhere';
+                if (!res.ok) {
+                    showError((res.body && res.body.message) || 'Could not rotate the secret.');
+                    return;
+                }
+                var b = res.body;
+                document.getElementById('rotateQrImg').src = 'data:image/png;base64,' + (b.QrCodeBase64 || b.qrCodeBase64 || '');
+                document.getElementById('rotateQrWrap').classList.add('show');
+                var manual = b.ManualEntryKey || b.manualEntryKey || b.SecretKey || b.secretKey || '';
+                var st = document.getElementById('rotateSecretText'); st.textContent = manual; st.classList.add('show');
+                document.getElementById('rotateTotpCode').value = '';
+                document.getElementById('rotateRecoveryCode').value = '';
+                showOk('Secret rotated. Scan the new QR with your authenticator now — your session has been signed out, so the next request will redirect you to sign in with the new code.');
+            }).catch(function() { btn.disabled = false; btn.textContent = 'Rotate secret & sign out everywhere'; showError('Network error.'); });
         });
 
         document.getElementById('disableCode').addEventListener('input', function(e) {
