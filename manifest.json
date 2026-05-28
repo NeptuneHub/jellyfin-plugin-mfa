@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/NeptuneHub/jellyfin-plugin-mfa/main/mfa.png",
     "versions": [
       {
+        "version": "1.0.6.1",
+        "changelog": "## v1.0.6-jf10.11\n\n### Changes\n- Security and UX fix 2\n- Security and UX fix",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/NeptuneHub/jellyfin-plugin-mfa/releases/download/v1.0.6-jf10.11/Jellyfin.Plugin.Mfa-jf10.11-v1.0.6.1.zip",
+        "checksum": "722A6D0E804499EF6840D51141E3E34F",
+        "timestamp": "2026-05-28T10:03:02Z"
+      },
+      {
         "version": "1.0.6.0",
         "changelog": "## v1.0.6\n\n### Changes\n- Security and UX fix 2",
         "targetAbi": "10.10.0.0",
