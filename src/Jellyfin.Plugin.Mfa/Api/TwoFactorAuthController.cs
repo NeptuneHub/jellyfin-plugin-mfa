@@ -79,7 +79,8 @@ public class TwoFactorAuthController : ControllerBase
         throw new UnauthorizedAccessException();
     }
 
-    private string ClientIp() => HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    private string ClientIp()
+        => ClientIpResolver.Resolve(HttpContext, Plugin.Instance?.Configuration?.TrustedProxyCidrs);
 
     // SEC S4: a submitted code is at most 6 chars (TOTP) or ~14 (recovery), and a
     // challenge token is ~43 chars (base64url of 32 bytes). Reject anything wildly
@@ -1013,6 +1014,154 @@ public class TwoFactorAuthController : ControllerBase
         }).ConfigureAwait(false);
 
         return Ok();
+    }
+
+    /// <summary>Self-service TOTP seed rotation. Replaces the encrypted seed in
+    /// place — the account stays enrolled, recovery codes survive (minus the one
+    /// consumed), but every existing trusted session is invalidated so the user
+    /// must re-verify with the new authenticator on every device. Use this when
+    /// the seed may have leaked but you don't want the disable/re-enable gap.
+    /// <para>Requires BOTH a current authenticator code AND a recovery code so
+    /// neither factor alone (a stolen seed copy, or a captured recovery code)
+    /// can silently re-roll the seed and lock the legitimate owner out.</para></summary>
+    [HttpPost("Setup/Totp/Rotate")]
+    [Authorize]
+    [ProducesResponseType(typeof(TotpSetupResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
+    public async Task<ActionResult<TotpSetupResponse>> RotateTotp([FromBody, Required] RotateTotpRequest request)
+    {
+        var userId = GetCurrentUserId();
+        var clientIp = ClientIp();
+
+        if (FieldTooLong(request.TotpCode) || FieldTooLong(request.RecoveryCode))
+        {
+            return BadRequest(new { message = "Field too long." });
+        }
+
+        var userData = await _store.GetUserDataAsync(userId).ConfigureAwait(false);
+        if (!(userData.TotpEnabled && userData.TotpVerified) || string.IsNullOrEmpty(userData.EncryptedTotpSecret))
+        {
+            return BadRequest(new { message = "Two-factor is not currently enabled — enroll first." });
+        }
+
+        if (await _store.IsLockedOutAsync(userId).ConfigureAwait(false))
+        {
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = "Account is locked out. Try again later." });
+        }
+
+        var rl = _rateLimiter.CheckAndRecord("rotate_user:" + userId.ToString("N"), 5, TimeSpan.FromMinutes(10));
+        if (!rl.allowed)
+        {
+            Response.Headers.Append("Retry-After", rl.retryAfterSeconds.ToString(CultureInfo.InvariantCulture));
+            return StatusCode(StatusCodes.Status429TooManyRequests, new
+            {
+                message = $"Too many rotation attempts. Try again in {rl.retryAfterSeconds} seconds.",
+            });
+        }
+
+        if (string.IsNullOrEmpty(request.TotpCode)
+            || string.IsNullOrEmpty(request.RecoveryCode)
+            || request.TotpCode.Length != 6
+            || !request.TotpCode.All(char.IsDigit))
+        {
+            return Unauthorized(new { message = "Provide both a current 6-digit authenticator code and a recovery code." });
+        }
+
+        // Verify the TOTP code against the EXISTING seed before we touch anything.
+        string currentSecret;
+        try
+        {
+            currentSecret = _totpService.DecryptSecret(userData.EncryptedTotpSecret, userId);
+        }
+        catch
+        {
+            return StatusCode(500, new { message = "TOTP secret is corrupted. Ask an administrator to reset your 2FA." });
+        }
+
+        if (!_totpService.ValidateCode(currentSecret, request.TotpCode, userId.ToString(),
+                userData.LastUsedTotpStep, out _))
+        {
+            await _store.RecordFailedAttemptAsync(userId).ConfigureAwait(false);
+            await _store.AddAuditEntryAsync(new AuditEntry
+            {
+                Timestamp = DateTime.UtcNow,
+                UserId = userId,
+                Username = _userManager.GetUserById(userId)?.Username ?? userId.ToString(),
+                RemoteIp = clientIp,
+                Result = AuditResult.Failed,
+                Method = "totp_rotate",
+            }).ConfigureAwait(false);
+            return Unauthorized(new { message = "Invalid authenticator code." });
+        }
+
+        // Consume the recovery code atomically under the per-user lock (SEC S2b)
+        // so a concurrent request can't both spend the same code.
+        var consumed = false;
+        await _store.MutateAsync(userId, ud =>
+        {
+            var idx = FindRecoveryCodeIndex(ud, request.RecoveryCode);
+            if (idx >= 0)
+            {
+                ud.RecoveryCodes[idx].Used = true;
+                ud.RecoveryCodes[idx].UsedAt = DateTime.UtcNow;
+                consumed = true;
+            }
+        }).ConfigureAwait(false);
+
+        if (!consumed)
+        {
+            await _store.RecordFailedAttemptAsync(userId).ConfigureAwait(false);
+            await _store.AddAuditEntryAsync(new AuditEntry
+            {
+                Timestamp = DateTime.UtcNow,
+                UserId = userId,
+                Username = _userManager.GetUserById(userId)?.Username ?? userId.ToString(),
+                RemoteIp = clientIp,
+                Result = AuditResult.Failed,
+                Method = "totp_rotate",
+            }).ConfigureAwait(false);
+            return Unauthorized(new { message = "Invalid recovery code." });
+        }
+
+        // Both proofs valid — mint a new secret and atomically swap it in.
+        var jellyfinUser = _userManager.GetUserById(userId);
+        var username = jellyfinUser?.Username ?? userId.ToString();
+        var (secret, qrCodeBase64, manualEntryKey) = _totpService.GenerateSecret(username);
+        var encryptedNew = _totpService.EncryptSecret(secret, userId);
+
+        await _store.MutateAsync(userId, ud =>
+        {
+            ud.EncryptedTotpSecret = encryptedNew;
+            ud.LastUsedTotpStep = 0;
+            ud.VerifiedSessions.Clear();
+        }).ConfigureAwait(false);
+        _totpService.ResetReplayCache(userId.ToString());
+
+        // Sign out every existing session so the rotation is enforced end-to-end:
+        // an attacker who held a non-expired trusted-session token loses it, and
+        // the legitimate user must use the new authenticator on every device.
+        await _sessionTerm.LogoutAllForUserAsync(userId).ConfigureAwait(false);
+        await _store.ResetFailedAttemptsAsync(userId).ConfigureAwait(false);
+        _rateLimiter.Reset("rotate_user:" + userId.ToString("N"));
+
+        await _store.AddAuditEntryAsync(new AuditEntry
+        {
+            Timestamp = DateTime.UtcNow,
+            UserId = userId,
+            Username = username,
+            RemoteIp = clientIp,
+            Result = AuditResult.ConfigChanged,
+            Method = "totp_rotate",
+        }).ConfigureAwait(false);
+
+        return Ok(new TotpSetupResponse
+        {
+            SecretKey = secret,
+            QrCodeBase64 = qrCodeBase64,
+            ManualEntryKey = manualEntryKey,
+        });
     }
 
     /// <summary>Self-service disable. Requires a valid current second factor

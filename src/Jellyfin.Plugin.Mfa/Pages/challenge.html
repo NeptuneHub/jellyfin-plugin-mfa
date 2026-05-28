@@ -117,11 +117,15 @@
                 input.classList.add('recovery');
                 input.setAttribute('maxlength', '11');
                 input.setAttribute('placeholder', 'XXXXX-XXXXX');
+                input.setAttribute('inputmode', 'text');
+                input.setAttribute('autocapitalize', 'characters');
                 label.textContent = 'Recovery code';
             } else {
                 input.classList.remove('recovery');
                 input.setAttribute('maxlength', '6');
                 input.setAttribute('placeholder', '000000');
+                input.setAttribute('inputmode', 'numeric');
+                input.removeAttribute('autocapitalize');
                 label.textContent = '6-digit code';
             }
             input.value = '';

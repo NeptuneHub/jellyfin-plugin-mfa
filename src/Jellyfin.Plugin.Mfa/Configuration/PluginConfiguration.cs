@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using MediaBrowser.Model.Plugins;
 
 namespace Jellyfin.Plugin.Mfa.Configuration;
@@ -88,4 +89,22 @@ public class PluginConfiguration : BasePluginConfiguration
     /// once. Trust is stored as a hash of the access token bound to the device,
     /// and is wiped on 2FA disable/reset. Clamped to 1–365; default 30.</summary>
     public int TrustedSessionDays { get; set; } = 30;
+
+    /// <summary>CIDR ranges (one per entry) of reverse proxies allowed to set
+    /// <c>X-Forwarded-For</c>. When a request arrives from an IP inside any of
+    /// these ranges, the real client IP is taken from the rightmost untrusted
+    /// hop in the XFF header — used for rate-limit keying and audit logging.
+    /// When this list is empty (default), XFF is ignored and the TCP peer IP
+    /// is used directly: that's correct for direct-to-internet deployments,
+    /// but behind a proxy it causes every request to share one bucket so one
+    /// brute-forcer can 429 every other user.
+    /// <para>Examples: <c>127.0.0.1/32</c>, <c>10.0.0.0/8</c>, <c>172.16.0.0/12</c>,
+    /// <c>192.168.0.0/16</c>, <c>::1/128</c>. For Cloudflare add the published
+    /// edge prefixes (e.g. <c>173.245.48.0/20</c>, <c>103.21.244.0/22</c>, …).</para>
+    /// <para>SECURITY: only add ranges you control end-to-end. A trusted proxy is
+    /// taken at its word; if an attacker can forge XFF from inside a trusted
+    /// CIDR they can spoof their per-IP rate-limit bucket and audit IP.
+    /// Direct-to-internet servers should leave this empty.</para>
+    /// </summary>
+    public List<string> TrustedProxyCidrs { get; set; } = new();
 }

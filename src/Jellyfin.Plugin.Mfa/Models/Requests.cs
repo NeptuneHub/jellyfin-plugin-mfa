@@ -48,6 +48,18 @@ public class ToggleUserRequest
     public bool Enabled { get; set; }
 }
 
+/// <summary>Atomic TOTP secret rotation: replaces the encrypted seed in place
+/// without dropping the user's 2FA. Requires BOTH a current authenticator code
+/// AND a recovery code — defence in depth so an attacker who only obtained the
+/// seed (or only a recovery code) can't silently rotate it. The recovery code
+/// is consumed on success.</summary>
+public class RotateTotpRequest
+{
+    public string TotpCode { get; set; } = string.Empty;
+
+    public string RecoveryCode { get; set; } = string.Empty;
+}
+
 public class LoginWithCodeRequest
 {
     public string Username { get; set; } = string.Empty;

@@ -103,6 +103,16 @@
                     regular use never re-prompts. 1–365, default 30.</span>
                 </label>
                 <input type="number" id="cfgTrustedDays" class="tfa-input" min="1" max="365" style="margin-bottom:18px;width:120px;" />
+                <label style="display:block;color:#888;font-size:12px;margin-bottom:6px;">Trusted reverse-proxy CIDRs
+                    <span class="muted" style="display:block;font-size:12px;text-transform:none;">One CIDR (or bare IP)
+                    per line. When this server sits behind a reverse proxy (Nginx, Caddy, Cloudflare, Traefik), list the
+                    proxy's IP range here so the plugin reads the real client IP from <code>X-Forwarded-For</code>
+                    instead of seeing every request as coming from the proxy. Required to make per-IP rate limits
+                    work behind a proxy. Leave empty for direct-to-internet deployments. Examples:
+                    <code>127.0.0.1/32</code>, <code>10.0.0.0/8</code>, <code>::1/128</code>. <strong>Only add ranges you
+                    fully control</strong> — a trusted hop can spoof any client IP.</span>
+                </label>
+                <textarea id="cfgTrustedProxies" class="tfa-input" rows="4" placeholder="127.0.0.1/32&#10;10.0.0.0/8" style="margin-bottom:18px;width:100%;font-family:ui-monospace,monospace;font-size:13px;resize:vertical;"></textarea>
                 <div>
                     <button is="emby-button" type="button" class="raised button-submit" id="btnSaveSettings"><span>Save</span></button>
                 </div>
@@ -235,6 +245,8 @@
                     page.querySelector('#cfgBlockNative').checked = cfg.BlockNativeLoginForEnforcedUsers !== false;
                     page.querySelector('#cfgAllowQuickConnect').checked = cfg.AllowQuickConnectForEnrolledUsers === true;
                     page.querySelector('#cfgTrustedDays').value = cfg.TrustedSessionDays || 30;
+                    var proxies = cfg.TrustedProxyCidrs || [];
+                    page.querySelector('#cfgTrustedProxies').value = Array.isArray(proxies) ? proxies.join('\n') : '';
                 });
             }
 
@@ -246,6 +258,10 @@
                     cfg.AllowQuickConnectForEnrolledUsers = page.querySelector('#cfgAllowQuickConnect').checked;
                     var td = parseInt(page.querySelector('#cfgTrustedDays').value, 10);
                     cfg.TrustedSessionDays = (td >= 1 && td <= 365) ? td : 30;
+                    cfg.TrustedProxyCidrs = page.querySelector('#cfgTrustedProxies').value
+                        .split(/\r?\n/)
+                        .map(function (s) { return s.trim(); })
+                        .filter(function (s) { return s.length > 0; });
                     return api().updatePluginConfiguration(PLUGIN_ID, cfg);
                 }).then(function () {
                     toast('Settings saved.', true);

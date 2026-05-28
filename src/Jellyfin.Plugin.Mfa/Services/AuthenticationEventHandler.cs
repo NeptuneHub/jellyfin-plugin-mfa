@@ -255,17 +255,55 @@ public class AuthenticationEventHandler : IHostedService
                 }
             }
         }
-        else
+        else if (enrollmentInProgress)
         {
-            // Enrollment token (keep it alive, just end the unverified session) or a
-            // session whose token couldn't be resolved (best effort).
+            // Enrollment token: keep it alive (it'll be handed back after the user
+            // completes /Mfa/Enroll/Totp/Confirm); just end the unverified session
+            // so the password-only credentials can't keep it open server-side.
             try
             {
                 await _sessionManager.ReportSessionEnded(info.Id).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[2FA] Failed to end unverified session for {Name}", info.UserName);
+                _logger.LogWarning(ex, "[2FA] Failed to end enrollment-in-progress session for {Name}", info.UserName);
+            }
+        }
+        else
+        {
+            // SEC S3 unresolved-token corner: token couldn't be mapped to the
+            // session (some Quick Connect clients, or a session whose DeviceId
+            // doesn't match any device record). We CAN'T revoke it in Jellyfin's
+            // persistent store — only end the session. The token therefore
+            // remains valid in the DB until its natural expiry, guarded only by
+            // the volatile in-memory BlockToken set above (which lapses on a
+            // process restart). Warn + audit so the frequency is observable: if
+            // this fires in your deployment, port the upstream response-rewrite
+            // middleware to catch the token at mint time instead.
+            _logger.LogWarning(
+                "[2FA] S3 unresolved-token: no AccessToken resolvable for session of {Name} (DeviceId={DeviceId}) — ReportSessionEnded only; token remains valid in Jellyfin store until expiry",
+                info.UserName, info.DeviceId);
+
+            await _store.AddAuditEntryAsync(new AuditEntry
+            {
+                Timestamp = DateTime.UtcNow,
+                UserId = info.UserId,
+                Username = info.UserName ?? string.Empty,
+                RemoteIp = info.RemoteEndPoint ?? string.Empty,
+                DeviceId = info.DeviceId ?? string.Empty,
+                DeviceName = info.DeviceName ?? string.Empty,
+                Result = AuditResult.Failed,
+                Method = "s3_unresolved_token",
+                Details = "Session had no resolvable AccessToken; could not revoke, only ended.",
+            }).ConfigureAwait(false);
+
+            try
+            {
+                await _sessionManager.ReportSessionEnded(info.Id).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[2FA] Failed to end unresolved-token session for {Name}", info.UserName);
             }
         }
     }
